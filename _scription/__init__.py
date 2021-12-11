@@ -74,7 +74,7 @@ import textwrap
 import threading
 import time
 import traceback
-from aenum import Enum, IntEnum, Flag, export, version as aenum_version
+from _aenum import Enum, IntEnum, Flag, export, version as aenum_version
 from collections import OrderedDict
 from math import floor
 from sys import stdin, stdout, stderr
