@@ -26,10 +26,14 @@ def pyzapp(source, output, include, shebang, compress, force):
     if not source.exists():
         abort('unable to find %r' % source)
     source = Path.abspath(source)
-    if source.isfile() and not shebang:
+    if not shebang:
         # get shebang from the file
-        with open(source) as s:
-            line = s.readline()
+        if source.isfile():
+            with open(source) as s:
+                line = s.readline()
+        elif source.exists('__main__.py'):
+            with open(source/'__main__') as s:
+                line = s.readline()
         if line.startswith('#!'):
             shebang = line[2:]
     print('source: %r' % source)
@@ -95,6 +99,9 @@ def pyzapp(source, output, include, shebang, compress, force):
     if not source_dir.exists('__main__.py'):
         included = source_dir.glob()
         new_main = []
+        if shebang:
+            new_main.append('#!%s' % shebang)
+            new_main.append('')
         new_main.append('import sys')
         # new_main.append('if sys.path[0] == ".":')
         # new_main.append('    sys.path.pop(0)\n')
