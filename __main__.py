@@ -33,6 +33,7 @@ def pyzapp(source, output, include, shebang, compress, force):
         if line.startswith('#!'):
             shebang = line[2:]
     print('source: %r' % source)
+    print('output: %r' % output)
     print('shebang: %r' % shebang)
     # verify output
     if not output:
@@ -65,24 +66,19 @@ def pyzapp(source, output, include, shebang, compress, force):
         source.copy(source_dir/'main.py')
     print('working dir: %r' % source_dir)
     #
-    # add INCLUDE modules
-    for module_name in include:
-        print('including %r' % module_name)
-        if module_name in sys.modules:
-            module = sys.modules[module_name]
-        else:
-            module = __import__(module_name)
-        module_dir = Path(module.__file__).dirname
-        module_dir.copytree(source_dir/module_dir.filename)
-    #
     # create __main__ if missing
     if not source_dir.exists('__main__.py'):
         if not source_dir.exists('main.py'):
             abort('main.py or __main__.py is required')
-        included = source_dir.listdir()
+        included = source_dir.glob()
         new_main = []
-        new_main.append('\nimport sys')
-        new_main.append('\nsaved_modules = []')
+        new_main.append('import sys')
+        new_main.append('if sys.path[0] == ".":')
+        new_main.append('    sys.path.pop(0)\n')
+        new_main.append('')
+        new_main.append('# protect against different versions of modules being imported')
+        new_main.append("# by Python's startup procedures")
+        new_main.append('saved_modules = []')
         for inc in included:
             if inc.ext == '.py' or inc.isdir():
                 new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % inc.stem)
@@ -90,26 +86,52 @@ def pyzapp(source, output, include, shebang, compress, force):
         with open(source_dir/'__main__.py', 'w') as m:
             m.write('\n'.join(new_main))
     #
-    # create the archive and add the files
+    # create the archive and add source files
     with open(output, 'wb') as fd:
         if shebang:
             fd.write('#!%s\n' % shebang)
         with ZipFile(fd, 'w', compression=compression) as zf:
             for dirpath, dirnames, filenames in source_dir.walk():
+                print('dirpath:', dirpath)
                 if '.git' in dirnames:
                     dirnames.pop(dirnames.index('.git'))
-                echo(dirpath)
+                if '__pycache__' in dirnames:
+                    dirnames.pop(dirnames.index('__pycache__'))
+                print(dirpath, verbose=2)
                 for f in filenames:
-                    echo('  ', f)
-                    if f.endswith(('.swp','.pyc')):
+                    print('  ', f, verbose=2)
+                    if f.endswith(('.swp','.pyc','.bak','.old')):
                         continue
                     arcname = (dirpath/f).relpath(source_dir)
-                    f = (dirpath/f).relpath(source)
+                    f = (dirpath/f)
                     print('adding %r as %r' % (f, arcname))
                     zf.write(f, arcname=arcname)
+            #
+            # add INCLUDE modules
+            for module_name in include:
+                print('including %r' % module_name)
+                if module_name in sys.modules:
+                    module = sys.modules[module_name]
+                else:
+                    module = __import__(module_name)
+                module_dir = Path(module.__file__).dirname
+                for dirpath, dirnames, filenames in module_dir.walk():
+                    if '.git' in dirnames:
+                        dirnames.pop(dirnames.index('.git'))
+                    if '__pycache__' in dirnames:
+                        dirnames.pop(dirnames.index('__pycache__'))
+                    print(dirpath, verbose=2)
+                    for f in filenames:
+                        print('  ', f, verbose=2)
+                        if f.endswith(('.swp','.pyc','.bak','.old')):
+                            continue
+                        arcname = (dirpath/f).relpath(module_dir.dirname)
+                        f = (dirpath/f)
+                        print('adding %r as %r' % (f, arcname))
+                        zf.write(f, arcname=arcname)
     output.chmod(0o555)
-    # if remove_src:
-    #     source_dir.rmtree()
+    if remove_src:
+        source_dir.rmtree()
 
 
 # helpers
