@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 
 # imports
 
@@ -10,6 +10,13 @@ from tempfile import mkdtemp
 from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
 
 import sys
+
+try:
+    ModuleNotFoundError
+except NameError:
+    class ModuleNotFoundError(ImportError):
+        pass
+
 
 # API
 
@@ -32,7 +39,7 @@ def pyzapp(source, output, include, shebang, compress, force):
             with open(source) as s:
                 line = s.readline()
         elif source.exists('__main__.py'):
-            with open(source/'__main__') as s:
+            with open(source/'__main__.py') as s:
                 line = s.readline()
         if line.startswith('#!'):
             shebang = line[2:].strip()
@@ -134,14 +141,16 @@ def pyzapp(source, output, include, shebang, compress, force):
             new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % inc_module_name)
             imports.append(inc_module_name)
             if inc_module_name in sys.modules:
-                module = sys.modules[inc_module_name]
+                module_path = Path(sys.modules[inc_module_name].__file__)
             else:
-                module = __import__(inc_module_name)
-            module_file = Path(module.__file__).stem
+                print('  importing', inc_module_name)
+                module_path = Path(find_module(inc_module_name))
+            module_file = module_path.stem
             if module_file != '__init__':
                 # single file, not a package
+                print('  and skipping')
                 continue
-            module_dir = Path(module.__file__).dirname
+            module_dir = module_path.dirname
             base_dir = module_dir.dirname
             for dirpath, dirnames, filenames in module_dir.walk():
                 if '.git' in dirnames:
@@ -149,7 +158,7 @@ def pyzapp(source, output, include, shebang, compress, force):
                 if '__pycache__' in dirnames:
                     dirnames.pop(dirnames.index('__pycache__'))
                 for f in filenames:
-                    if f == '__init__.py' or not f.endswith('.py'):
+                    if f in ('__init__.py','__main__.py') or not f.endswith('.py'):
                         continue
                     sub_imp = (dirpath/f-base_dir).lstrip('/').replace('/', '.').strip_ext()
                     print('adding included subimport %r' % sub_imp)
@@ -175,7 +184,6 @@ def pyzapp(source, output, include, shebang, compress, force):
                     dirnames.pop(dirnames.index('.git'))
                 if '__pycache__' in dirnames:
                     dirnames.pop(dirnames.index('__pycache__'))
-                print(dirpath, verbose=2)
                 for f in filenames:
                     print('  ', f, verbose=2)
                     if f.endswith(('.swp','.pyc','.bak','.old')):
@@ -189,11 +197,11 @@ def pyzapp(source, output, include, shebang, compress, force):
             for inc_module_name in include:
                 print('including %r' % inc_module_name)
                 if inc_module_name in sys.modules:
-                    module = sys.modules[inc_module_name]
+                    module_path = Path(sys.modules[inc_module_name].__file__)
                 else:
-                    module = __import__(inc_module_name)
-                module_file = Path(module.__file__).stem
-                module_dir = Path(module.__file__).dirname
+                    module_path = Path(find_module(inc_module_name))
+                module_file = module_path.stem
+                module_dir = module_path.dirname
                 if module_file != '__init__':
                     # single file, not a package
                     arcname = module_file + '.py'
@@ -201,7 +209,7 @@ def pyzapp(source, output, include, shebang, compress, force):
                     print('adding %r as %r' % (f, arcname))
                     zf.write(f, arcname=arcname)
                     continue
-                print('using %s from %r' % (inc_module_name, module.__file__))
+                print('using %s from %r' % (inc_module_name, module_dir))
                 for dirpath, dirnames, filenames in module_dir.walk():
                     if '.git' in dirnames:
                         dirnames.pop(dirnames.index('.git'))
@@ -219,6 +227,19 @@ def pyzapp(source, output, include, shebang, compress, force):
     output.chmod(0o555)
     source_dir.rmtree()
 
+
+# helpers
+
+def find_module(name):
+    init = Path('__init__.py')
+    for p in sys.path:
+        path = Path(p)
+        if path.exists(name/init):
+            return path/name/init
+        elif path.exists(name+'.py'):
+            return path/name
+    else:
+        raise ModuleNotFoundError(name)
 
 # do it
 
