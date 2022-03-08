@@ -7,6 +7,7 @@ from __future__ import print_function
 from _scription import *
 from _antipathy import Path
 from tempfile import mkdtemp
+from textwrap import dedent
 from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
 
 import sys
@@ -41,6 +42,11 @@ def pyzapp(source, output, include, shebang, compress, force):
         elif source.exists('__main__.py'):
             with open(source/'__main__.py') as s:
                 line = s.readline()
+        elif source.exists('cli.py'):
+            with open(source/'cli.py') as s:
+                line = s.readline()
+        else:
+            line = ''
         if line.startswith('#!'):
             shebang = line[2:].strip()
     print('source: %r' % source)
@@ -81,8 +87,8 @@ def pyzapp(source, output, include, shebang, compress, force):
         abort('unable to convert a package with no __main__.py')
     elif source.isdir():
         # option 2
-        if not source.exists('__main__.py'):
-            abort('directory conversions must have a __main__.py as one will not be created')
+        if not source.exists('__main__.py') and not source.exists('cli.py'):
+            abort('directory conversions must have a `__main__.py` or a `cli.py`')
         mode = 'subdir'
         print('mode =', mode)
         pass
@@ -106,7 +112,7 @@ def pyzapp(source, output, include, shebang, compress, force):
     #
     # create __main__ if needed
     if not source_dir.exists('__main__.py'):
-        included = source_dir.glob()
+        # included = source_dir.glob()
         new_main = []
         if shebang:
             new_main.append('#!%s' % shebang)
@@ -116,15 +122,46 @@ def pyzapp(source, output, include, shebang, compress, force):
         new_main.append('# protect against different versions of modules being imported')
         new_main.append("# by Python's startup procedures")
         new_main.append('saved_modules = []')
-        imports = []
-        #
+
         # include files in source
-        for inc in included:
-            if inc.ext == '.py' or inc.isdir():
-                new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % inc.stem)
-                imports.append(inc.stem)
-                for dirpath, dirnames, filenames in source_dir.walk():
-                    # no-op if inc is a file
+        for dirpath, dirnames, filenames in source_dir.walk():
+            if dirpath != source_dir:
+                if '__init__.py' in filenames:
+                    # it's a package
+                    sub_imp = (dirpath-source_dir).lstrip('/').replace('/', '.').strip_ext()
+                    print('adding subimport %r' % sub_imp)
+                    new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
+                else:
+                    dirnames[:] = []
+                    continue
+            if '.git' in dirnames:
+                dirnames.pop(dirnames.index('.git'))
+            if '__pycache__' in dirnames:
+                dirnames.pop(dirnames.index('__pycache__'))
+            for f in filenames:
+                if f in ('__init__.py','__main__.py') or not f.endswith('.py'):
+                    continue
+                sub_imp = (dirpath/f-source_dir).lstrip('/').replace('/', '.').strip_ext()
+                print('adding subimport %r' % sub_imp)
+                new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
+        #
+        # include files from command line
+        for inc_module_name in include:
+            new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % inc_module_name)
+            if inc_module_name in sys.modules:
+                module_path = Path(sys.modules[inc_module_name].__file__)
+            else:
+                print('  importing', inc_module_name, verbose=2)
+                module_path = Path(find_module(inc_module_name))
+            module_file = module_path.stem
+            if module_file != '__init__':
+                # single file
+                new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % module_file)
+            else:
+                # package
+                module_dir = module_path.dirname
+                base_dir = module_dir.dirname
+                for dirpath, dirnames, filenames in module_dir.walk():
                     if '.git' in dirnames:
                         dirnames.pop(dirnames.index('.git'))
                     if '__pycache__' in dirnames:
@@ -132,44 +169,63 @@ def pyzapp(source, output, include, shebang, compress, force):
                     for f in filenames:
                         if f in ('__init__.py','__main__.py') or not f.endswith('.py'):
                             continue
-                        sub_imp = (dirpath/f-source_dir).lstrip('/').replace('/', '.').strip_ext()
-                        print('adding inherent subimport %r' % sub_imp)
-                        imports.append(sub_imp)
-        #
-        # include files from command line
-        for inc_module_name in include:
-            new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % inc_module_name)
-            imports.append(inc_module_name)
-            if inc_module_name in sys.modules:
-                module_path = Path(sys.modules[inc_module_name].__file__)
-            else:
-                print('  importing', inc_module_name)
-                module_path = Path(find_module(inc_module_name))
-            module_file = module_path.stem
-            if module_file != '__init__':
-                # single file, not a package
-                print('  and skipping')
-                continue
-            module_dir = module_path.dirname
-            base_dir = module_dir.dirname
-            for dirpath, dirnames, filenames in module_dir.walk():
-                if '.git' in dirnames:
-                    dirnames.pop(dirnames.index('.git'))
-                if '__pycache__' in dirnames:
-                    dirnames.pop(dirnames.index('__pycache__'))
-                for f in filenames:
-                    if f in ('__init__.py','__main__.py') or not f.endswith('.py'):
-                        continue
-                    sub_imp = (dirpath/f-base_dir).lstrip('/').replace('/', '.').strip_ext()
-                    print('adding included subimport %r' % sub_imp)
-                    imports.append(sub_imp)
-                    new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
+                        sub_imp = (dirpath/f-base_dir).lstrip('/').replace('/', '.').strip_ext()
+                        print('adding included subimport %r' % sub_imp)
+                        new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
         #
         new_main.append('')
-        if mode == 'script':
-            new_main.append('import cli')
-        elif mode == 'package':
+        #
+        # handle accessing non-py files inside zip archive (rudimentary)
+        new_main.append(dedent("""\
+                import os, os.path, errno
+                os_path_exists = os.path.exists
+
+                zip, _ = os.path.split(__file__)
+                zip_dir = zip + os.path.sep
+
+                def pyzapp_exists(file):
+                    if not file.startswith(zip_dir):
+                        return os_path_exists(file)
+                    from zipfile import ZipFile
+                    zip_location = file[len(zip_dir):]
+                    with ZipFile(bltn_open(zip)) as archive:
+                        try:
+                            archive.getinfo(zip_location)
+                            return True
+                        except KeyError:
+                            return False
+                os.path.exists = pyzapp_exists
+
+                def pyzapp_open(file, *args, **kwds):
+                    if not file.startswith(zip_dir):
+                        return bltn_open(file, *args, **kwds)
+                    if args:
+                        mode = args[0]
+                    else:
+                        mode = 'r'
+                    if mode == 'rb':
+                        mode = 'r'
+                    from zipfile import ZipFile
+                    zip_location = file[len(zip_dir):]
+                    with ZipFile(bltn_open(zip)) as archive:
+                        try:
+                            return archive.open(zip_location, mode)
+                        except KeyError:
+                            raise OSError(errno.ENOENT, os.strerror(errno.ENOENT), file)
+
+                try:
+                    import __builtin__
+                    bltn_open = __builtin__.open
+                    __builtin__.open = pyzapp_open
+                except ImportError:
+                    import builtins
+                    bltn_open = builtins.open
+                    builtins.open = pyzapp_open
+                """))
+        if mode == 'package':
             new_main.append('from %s import __main__' % module_name)
+        elif source_dir.exists('cli.py'):
+            new_main.append('import cli')
         with open(source_dir/'__main__.py', 'w') as m:
             m.write('\n'.join(new_main) + '\n')
     #
@@ -179,18 +235,23 @@ def pyzapp(source, output, include, shebang, compress, force):
             fd.write('#!%s\n' % shebang)
         with ZipFile(fd, 'w', compression=compression) as zf:
             for dirpath, dirnames, filenames in source_dir.walk():
-                print('dirpath:', dirpath)
+                print('  dirpath:', dirpath, verbose=3)
                 if '.git' in dirnames:
                     dirnames.pop(dirnames.index('.git'))
+                if '.hg' in dirnames:
+                    dirnames.pop(dirnames.index('.hg'))
                 if '__pycache__' in dirnames:
                     dirnames.pop(dirnames.index('__pycache__'))
                 for f in filenames:
-                    print('  ', f, verbose=2)
-                    if f.endswith(('.swp','.pyc','.bak','.old')):
+                    print('   ', f, verbose=3)
+                    if (
+                            f.endswith(('.swp','.pyc','.bak','.old'))
+                            or f.startswith(('.git','.hg'))
+                        ):
                         continue
                     arcname = (dirpath/f).relpath(source_dir)
                     f = (dirpath/f)
-                    print('adding %r as %r' % (f, arcname))
+                    print('      adding %s' % (arcname, ), verbose=3)
                     zf.write(f, arcname=arcname)
             #
             # add INCLUDE modules
@@ -206,7 +267,7 @@ def pyzapp(source, output, include, shebang, compress, force):
                     # single file, not a package
                     arcname = module_file + '.py'
                     f = module_dir/module_file + '.py'
-                    print('adding %r as %r' % (f, arcname))
+                    print('  adding %r as %r' % (f, arcname), verbose=3)
                     zf.write(f, arcname=arcname)
                     continue
                 print('using %s from %r' % (inc_module_name, module_dir))
@@ -215,14 +276,14 @@ def pyzapp(source, output, include, shebang, compress, force):
                         dirnames.pop(dirnames.index('.git'))
                     if '__pycache__' in dirnames:
                         dirnames.pop(dirnames.index('__pycache__'))
-                    print(dirpath, verbose=2)
+                    print(' ', dirpath, verbose=3)
                     for f in filenames:
-                        print('  ', f, verbose=2)
+                        print('   ', f, verbose=3)
                         if f.endswith(('.swp','.pyc','.bak','.old')):
                             continue
                         arcname = (dirpath/f).relpath(module_dir.dirname)
                         f = (dirpath/f)
-                        print('adding %r as %r' % (f, arcname))
+                        print('    adding %r as %r' % (arcname, ), verbose=3)
                         zf.write(f, arcname=arcname)
     output.chmod(0o555)
     source_dir.rmtree()
