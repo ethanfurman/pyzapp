@@ -283,7 +283,7 @@ def pyzapp(source, output, include, shebang, compress, force):
                             continue
                         arcname = (dirpath/f).relpath(module_dir.dirname)
                         f = (dirpath/f)
-                        print('    adding %r as %r' % (arcname, ), verbose=3)
+                        print('    adding %r as %r' % (f, arcname, ), verbose=3)
                         zf.write(f, arcname=arcname)
     output.chmod(0o555)
     source_dir.rmtree()
