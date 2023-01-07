@@ -493,7 +493,7 @@ class Methods(object):
                 else:
                     base = filename
         df_sep = cls._EMPTY
-        if len(dirs) > 1 and filename:
+        if dirs and dirs != slash and filename:
             df_sep = slash
         value = vol + dirs + df_sep + filename
         p = cls.data_type.__new__(cls, value)

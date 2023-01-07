@@ -33,11 +33,20 @@ intelligently parses command lines
 from __future__ import print_function
 
 # version
-version = 0, 86, 8
+version = 0, 86, 12
 
 # imports
 import sys
-py_ver = sys.version_info[:2]
+pyver = sys.version_info[:2]
+PY2 = pyver < (3, )
+PY3 = pyver >= (3, )
+PY25 = (2, 5)
+PY26 = (2, 6)
+PY33 = (3, 3)
+PY34 = (3, 4)
+PY35 = (3, 5)
+PY36 = (3, 6)
+
 is_win = sys.platform.startswith('win')
 if is_win:
     import signal
@@ -51,11 +60,20 @@ else:
     import signal
     KILL_SIGNALS = [getattr(signal, sig) for sig in ('SIGTERM', 'SIGQUIT', 'SIGKILL') if hasattr(signal, sig)]
     from subprocess import Popen, PIPE
+
 from threading import Thread
 try:
     from Queue import Queue, Empty
 except ImportError:
     from queue import Queue, Empty
+
+if PY3:
+    from inspect import getfullargspec
+    def getargspec(method):
+        args, varargs, keywords, defaults, _, _, _ = getfullargspec(method)
+        return args, varargs, keywords, defaults
+else:
+    from inspect import getargspec
 
 import ast
 import codecs
@@ -74,7 +92,7 @@ import textwrap
 import threading
 import time
 import traceback
-from _aenum import Enum, IntEnum, Flag, export, version as aenum_version
+from aenum import Enum, IntEnum, Flag, export, version as aenum_version
 from collections import OrderedDict
 from math import floor
 from sys import stdin, stdout, stderr
@@ -86,7 +104,8 @@ io_lock = threading.Lock()
 
 # py 2/3 compatibility shims
 raise_with_traceback = None
-if py_ver < (3, 0):
+if PY2:
+    import __builtin__ as builtins
     b = str
     u = unicode
     bytes = b
@@ -98,11 +117,13 @@ if py_ver < (3, 0):
     from itertools import izip_longest as zip_longest
     from __builtin__ import print as _print
     from __builtin__ import raw_input as raw_input
+    from __builtin__ import type as type_of
     exec(textwrap.dedent('''\
         def raise_with_traceback(exc, tb):
             raise exc, None, tb
             '''))
 else:
+    import builtins
     b = bytes
     u = str
     bytes = b
@@ -114,6 +135,7 @@ else:
     from itertools import zip_longest
     from builtins import print as _print
     from builtins import input as raw_input
+    from builtins import type as type_of
     exec(textwrap.dedent('''\
         def raise_with_traceback(exc, tb):
             raise exc.with_traceback(tb)
@@ -295,9 +317,11 @@ class Exit(IntEnum):
 
     Success                         =   0, 'ran successfully'
     Error = UnknownError = Unknown  =   1, 'unspecified error'
+    MissingFile                     =   2, 'file not found'
+    InvalidPath                     =   3, 'path not possible'
     ScriptionError                  =  63, 'fatal scription error'
     UsageError     = Usage          =  64, 'command line usage error'
-    DataError                       =  65, 'data format error'
+    DataError                       =  65, 'data error'
     NoInput                         =  66, 'cannot open input'
     NoUser                          =  67, 'user unknown'
     NoHost                          =  68, 'host unknown'
@@ -337,9 +361,9 @@ class Exit(IntEnum):
         ):
         sig = getattr(signal, name, None)
         if sig is not None:
-            v[name] = sig, name
+            v[name] = -sig, name
     # and add a catch-all unknown signal
-    v['SIGNKWN'] = 128, 'invalid signal'
+    v['SIGNKWN'] = -128, 'invalid signal'
 
 
 @export(globals())
@@ -392,7 +416,7 @@ def _add_annotations(func, annotations, script=False):
     add annotations as __scription__ to func
     '''
     scription_debug('adding annotations to %r' % (func.__name__, ))
-    params, varargs, keywords, defaults = inspect.getargspec(func)
+    params, varargs, keywords, defaults = getargspec(func)
     radio = {}
     if varargs:
         params.append(varargs)
@@ -463,7 +487,7 @@ def _func_globals(func):
     '''
     return the function's globals
     '''
-    if py_ver < (3, 0):
+    if PY2:
         return func.func_globals
     else:
         return func.__globals__
@@ -512,7 +536,7 @@ def _help(func, script=False):
     create help from __scription__ annotations and header defaults
     '''
     scription_debug('_help for', func.__name__, verbose=3)
-    params, vararg, keywordarg, defaults = inspect.getargspec(func)
+    params, vararg, keywordarg, defaults = getargspec(func)
     scription_debug('  PARAMS', params, vararg, keywordarg, defaults, verbose=3)
     params = func.params = list(params)
     vararg = func.vararg = [vararg] if vararg else []
@@ -585,9 +609,9 @@ def _help(func, script=False):
         if arg_type is _identity and default is not empty and default is not None:
             if kind in ('multi', 'multireq'):
                 if default:
-                    arg_type = type(default[0])
+                    arg_type = type_of(default[0])
             else:
-                arg_type = type(default)
+                arg_type = type_of(default)
         spec.kind = kind
         spec.abbrev = abbrev
         spec.type = arg_type
@@ -619,7 +643,7 @@ def _help(func, script=False):
             annote._use_default = True
             if annote.kind not in ('multi', 'multireq'):
                 if annote.type is _identity and dflt is not None:
-                    annote.type = type(dflt)
+                    annote.type = type_of(dflt)
                 annote._script_default = annote.type(dflt)
             else:
                 if dflt is None:
@@ -628,7 +652,7 @@ def _help(func, script=False):
                     if not isinstance(dflt, tuple):
                         dflt = (dflt, )
                     if annote.type is _identity and dflt:
-                        annote.type = type(dflt[0])
+                        annote.type = type_of(dflt[0])
                     new_dflt = []
                     for d in dflt:
                         new_dflt.append(annote.type(d))
@@ -1153,7 +1177,8 @@ def _usage(func, param_line_args):
                 else:
                     args.append(annote)
     args = [arg.value for arg in sorted(args, key=lambda a: a._order) if arg._target is empty]
-    scription_debug('args: %r\nvarargs: %r' % (args, varargs))
+    scription_debug('args:    %r' % (args, ))
+    scription_debug('varargs: %r' % (varargs, ))
     if varargs is not None:
         main_args = tuple(args) + varargs
     else:
@@ -1242,7 +1267,7 @@ class Script(object):
                     kind = 'flag'
                 else:
                     kind = 'option'
-                spec = Spec('', kind, None, type(annotation), default=annotation)
+                spec = Spec('', kind, None, type_of(annotation), default=annotation)
             spec.__name__ = name
             if spec.usage is empty:
                 spec.usage = name.upper()
@@ -1338,7 +1363,7 @@ class Spec(object):
         elif kind in ('multi', 'multireq'):
             arg_type_default = tuple()
         elif default is not empty:
-            arg_type_default = type(default)
+            arg_type_default = type_of(default)
         if abbrev not in(empty, None) and not isinstance(abbrev, tuple):
             abbrev = (abbrev, )
         if usage is not empty:
@@ -1378,21 +1403,35 @@ class Spec(object):
 
     @property
     def value(self):
+        scription_debug('getting value for %r' % self.__name__)
         if self._cli_value is not empty:
             value = self._cli_value
+            scription_debug('   cli --> %r' % (value, ), verbose=2)
         elif self._envvar is not empty and pocket(value=os.environ.get(self._envvar)):
             value = pocket.value
             if self.kind == 'multi':
                 value = tuple([self.type(v) for v in _split_on_comma(value)])
             else:
                 value = self.type(value)
+            scription_debug('   env --> %r' % (value, ), verbose=2)
         elif self._script_default is not empty and self._use_default:
             value = self._script_default
-            if value is not None and self._type_default == () and not isinstance(value, tuple):
-                value = self.type(self._script_default)
-                value = (value, )
+            scription_debug('   default --> %r' % (value, ), verbose=2)
+            scription_debug('   type of --> %r' % (self.type, ), verbose=2)
+            if PY2 and isinstance(value, bytes):
+                value = value.decode(LOCALE_ENCODING)
+            if value is not None:
+                if self._type_default == ():
+                    if isinstance(value, tuple):
+                        value = tuple(self.type(v) for v in value)
+                    else:
+                        value = (self.type(value), )
+                else:
+                    value = self.type(value)
+            scription_debug('     final --> %r' % (value, ), verbose=2)
         elif self._type_default is not empty:
             value = self._type_default
+            scription_debug('   type default --> %r' % (value, ), verbose=2)
         else:
             raise ScriptionError('no value specified for %s' % self.usage)
         return value
@@ -1419,7 +1458,7 @@ def Run():
         scription_debug('Run already called once, returning')
         return
     globals()['HAS_BEEN_RUN'] = True
-    if py_ver < (3, 0):
+    if PY2:
         SYS_ARGS = [arg.decode(LOCALE_ENCODING) for arg in sys.argv]
     else:
         SYS_ARGS = sys.argv[:]
@@ -1530,6 +1569,8 @@ def Execute(args, cwd=None, password=None, password_timeout=None, input=None, in
         scription_debug('communicating')
         job.communicate(timeout=timeout, interactive=interactive, password=password, password_timeout=password_timeout, input=input, input_delay=input_delay)
     except BaseException as exc:
+        if getattr(exc, 'process', None) is None:
+            exc.process = job
         if interactive is None:
             echo(job.stdout)
             echo(job.stderr)
@@ -1546,7 +1587,8 @@ class Job(object):
     if pty is True runs command in a forked process, otherwise runs in a subprocess
     """
 
-    # subprocess is used record the process
+    name = None
+    # if subprocess is used record the process
     process = None
     returncode = None
     # if killed by a signal, record it
@@ -1579,6 +1621,7 @@ class Job(object):
             args = shlex.split(args)
         else:
             args = list(args)
+        self.name = args[0]
         if not pty:
             # use subprocess
             scription_debug('subprocess args:', args)
@@ -1587,6 +1630,16 @@ class Job(object):
             except OSError as exc:
                 scription_debug('subprocess cwd:', cwd)
                 scription_debug('subprocess env:', env)
+                if exc.errno == 2:
+                    self.pid = -1
+                    self.closed = True
+                    self.terminated = True
+                    try:
+                        raise ExecutionError('%s --> %r' % (args[0], exc), process=self)
+                    except ExecutionError:
+                        _, exc, tb = sys.exc_info()
+                        self._set_exc(exc, traceback=tb)
+                        return
                 raise
             self.pid = process.pid
             self.child_fd_out = process.stdout
@@ -1620,8 +1673,8 @@ class Job(object):
                         os.execvp(args[0], args)
                 except Exception:
                     exc = sys.exc_info()[1]
-                    self.write_error("%s:  %s" % (exc.__class__.__name__, ' - '.join([str(a) for a in exc.args])))
-                    os._exit(-1)
+                    self.write_error("EXCEPTION: %s --> %s(%s)" % (args[0], exc.__class__.__name__, ', '.join([repr(a) for a in exc.args])))
+                    os._exit(Exit.UnknownError)
             # parent process
             os.close(error_write)
             self.child_fd_out = self.child_fd
@@ -1658,7 +1711,7 @@ class Job(object):
                 with io_lock:
                     q.put((name, None))
                     scription_debug('dying %s (from exception %s)' % (name, exc))
-                    if not isinstance(exc, OSError) or exc.errno not in (errno.EBADF, errno.EIO):
+                    if not isinstance(exc, OSError) or exc.errno not in (errno.EBADF, errno.EIO, errno.EPIPE):
                         raise self._set_exc(exc, traceback=tb)
         def write_comm(channel, q):
             try:
@@ -1683,7 +1736,10 @@ class Job(object):
                     scription_debug('write_comm dying from self.abort')
             except Exception:
                 _, exc, tb = sys.exc_info()
-                raise self._set_exc(exc, traceback=tb)
+                if isinstance(exc, (IOError, OSError)) and exc.errno == errno.EPIPE:
+                    pass
+                else:
+                    raise self._set_exc(exc, traceback=tb)
         t = Thread(target=read_comm, name='stdout', args=('stdout', self.child_fd_out, self._all_output))
         t.daemon = True
         t.start()
@@ -1718,6 +1774,7 @@ class Job(object):
         # password_timeout  -> time allowed for successful password transmission
         # timeout           -> time allowed for successful completion of job
         # interactive       -> False = record only, 'echo' = echo output as we get it
+        self.raise_if_exceptions()
         try:
             deadman_switch = None
             scription_debug('timeout: %r, password_timeout: %r' % (timeout, password_timeout))
@@ -1817,7 +1874,15 @@ class Job(object):
                                 scription_debug('[echo: %s] waiting for echo off (%s remaining)' % (self.get_echo(), remaining_timeout))
                                 remaining_timeout -= 0.1
                                 time.sleep(0.1)
-                            if self.get_echo():
+                            if not self.is_alive():
+                                # job died
+                                try:
+                                    raise ExecuteError('job died', process=self)
+                                except ExecuteError:
+                                    cls, exc, tb = sys.exc_info()
+                                    self._set_exc(exc, traceback=tb)
+                                    raise exc
+                            elif self.get_echo():
                                 # too long
                                 try:
                                     raise TimeoutError('Password prompt not seen.')
@@ -1892,9 +1957,12 @@ class Job(object):
                 self._all_input.put(None)
                 # close handles and pipes
                 if self.process is not None:
-                    self.child_fd_in.close()
-                    self.child_fd_out.close()
-                    self.child_fd_err.close()
+                    if not isinstance(self.child_fd_in, int):
+                        self.child_fd_in.close()
+                    if not isinstance(self.child_fd_out, int):
+                        self.child_fd_out.close()
+                    if not isinstance(self.child_fd_err, int):
+                        self.child_fd_err.close()
                 else:
                     for fd in (self.child_fd, self.child_fd_err):
                         try:
@@ -2020,6 +2088,11 @@ class Job(object):
     def raise_if_exceptions(self):
         "raise if any stored exceptions"
         scription_debug('saved exceptions: %r' % (self.exceptions, ))
+        scription_debug('stderr: %r' % (self.stderr, ))
+        if self.stderr and len(self.stderr.split('\n')) == 1 and self.stderr.startswith('EXCEPTION: '):
+            # report the exception raised when trying to start the child
+            msg = self.stderr[11:]
+            raise ExecuteError(msg, process=self)
         if not self.exceptions:
             return
         if len(self.exceptions) == 1:
@@ -2102,7 +2175,7 @@ class Job(object):
         scription_debug('writing %r' % data, verbose=2)
         if not self.is_alive():
             try:
-                raise IOError(errno.EPIPE, 'Broken pipe.')
+                raise OSError(errno.ECHILD, "No child processes")
             except Exception:
                 _, exc, tb = sys.exc_info()
                 raise self._set_exc(exc, traceback=tb)
@@ -2226,14 +2299,14 @@ class OrmFile(object):
         settings = self._settings = OrmSection(name=filename)
         if not os.path.exists(filename):
             open(filename, 'w').close()
-        if py_ver < (3, 0):
+        if PY2:
             fh = open(filename)
         else:
             fh = open(filename, encoding=encoding)
         try:
             section = None
             for line in fh:
-                if py_ver < (3, 0):
+                if PY2:
                     line = line.decode(encoding)
                 line = line.strip()
                 if not line or line.startswith(('#',';')):
@@ -2957,6 +3030,8 @@ Falsey = Trivalent.false
 def Bool(arg):
     if arg in (True, False):
         return arg
+    if isinstance(arg, Trivalent):
+        return arg
     return arg.lower() in "true t yes y 1 on".split()
 
 def InputFile(arg):
@@ -3201,7 +3276,7 @@ def table_display(rows, widths=None, types=None, header=True, display_none=None,
         elif not isinstance(row, (tuple, list)):
             # handle a single, joined row
             if not isinstance(row, basestring):
-                raise ValueError('joined row value must be a string, not %r [%r]' % (type(row), row))
+                raise ValueError('joined row value must be a string, not %r [%r]' % (type_of(row), row))
             if len(row) == 1:
                 # make a line using the row character
                 row = row * single_cell_width
@@ -3703,27 +3778,37 @@ class Var(object):
     := for Python's less than 3.8
     '''
     def __init__(self, func=None):
-        self.data = _Var_Sentinel
-        self.func = func
+        self._data = _Var_Sentinel
+        self._func = func
     #
-    def __call__(self, *args):
-        if not args and self.data is _Var_Sentinel:
-            raise ValueError('nothing saved in var')
-        elif not args:
-            return self.data
-        elif self.func is not None:
+    def __call__(self, *args, **kwds):
+        if not args:
+            if self._data is _Var_Sentinel:
+                raise ValueError('nothing saved in var')
+            else:
+                return self._data
+        # we have args, what shall we do with them?
+        if self._func is not None:
             # run user-supplied function
-            self.data = self.func(*args)
-            return self.data
-        elif len(args) == 0:
-            # reset
-            self.data = _Var_Sentinel
+            self._data = self._func(*args, **kwds)
+            return self._data
+        elif kwds:
+            raise ValueError('keywords not supported unless function is specified')
         elif len(args) == 1:
-            self.data = args[0]
-            return self.data
+            self._data = args[0]
+            return self._data
         else:
-            self.data = args
-            return self.data
+            self._data = args
+            return self._data
+    #
+    def __getattr__(self, name):
+        if self._data is _Var_Sentinel:
+            raise ValueError('nothing saved in var')
+        try:
+            return getattr(self._data, name)
+        except AttributeError:
+            raise AttributeError('%r has no %r' % (self._data, name))
+
 
 
 class user_ids(object):
