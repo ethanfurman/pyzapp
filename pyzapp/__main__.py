@@ -183,35 +183,31 @@ def pyzapp(source, output, include, shebang, compress, force):
                 zip, _ = os.path.split(__file__)
                 zip_dir = zip + os.path.sep
 
-                def pyzapp_exists(file):
-                    if not file.startswith(zip_dir):
-                        return os_path_exists(file)
-                    from zipfile import ZipFile
-                    zip_location = file[len(zip_dir):]
-                    with ZipFile(bltn_open(zip)) as archive:
-                        try:
-                            archive.getinfo(zip_location)
-                            return True
-                        except KeyError:
-                            return False
+                def exists_in_pyzapp(filename):
+                    try:
+                        archive.getinfo(filename)
+                        return True
+                    except KeyError:
+                        return False
+
+                def pyzapp_exists(filename):
+                    return exists_in_pyzapp(filename) or os_path_exists(filename)
                 os.path.exists = pyzapp_exists
 
-                def pyzapp_open(file, *args, **kwds):
-                    if not file.startswith(zip_dir):
-                        return bltn_open(file, *args, **kwds)
-                    if args:
-                        mode = args[0]
+                def pyzapp_open(filename, *args, **kwds):
+                    if not exists_in_pyzapp(filename):
+                        return bltn_open(filename, *args, **kwds)
                     else:
-                        mode = 'r'
-                    if mode == 'rb':
-                        mode = 'r'
-                    from zipfile import ZipFile
-                    zip_location = file[len(zip_dir):]
-                    with ZipFile(bltn_open(zip)) as archive:
+                        if args:
+                            mode = args[0]
+                        else:
+                            mode = 'r'
+                        if mode == 'rb':
+                            mode = 'r'
                         try:
-                            return archive.open(zip_location, mode)
+                            return archive.open(filename, mode)
                         except KeyError:
-                            raise OSError(errno.ENOENT, os.strerror(errno.ENOENT), file)
+                            raise OSError(errno.ENOENT, os.strerror(errno.ENOENT), filename)
 
                 try:
                     import __builtin__
@@ -221,6 +217,9 @@ def pyzapp(source, output, include, shebang, compress, force):
                     import builtins
                     bltn_open = builtins.open
                     builtins.open = pyzapp_open
+
+                from zipfile import ZipFile
+                archive = ZipFile(bltn_open(zip, 'rb'))
                 """))
         if mode == 'package':
             new_main.append('from %s import __main__' % module_name)
