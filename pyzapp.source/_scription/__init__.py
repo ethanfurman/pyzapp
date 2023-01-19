@@ -33,7 +33,7 @@ intelligently parses command lines
 from __future__ import print_function
 
 # version
-version = 0, 86, 12
+version = 0, 86, 14
 
 # imports
 import sys
@@ -160,9 +160,11 @@ __all__ = (
     # the following are actually injected directly into the calling module, but are
     # added here as well for pylakes' benefit
     'script_main',          # Script decorator instance if used
+    'script_aliases',       # alternate command names
     'script_commands',      # defined commands
     'script_command',       # callback to run chosen command function
     'script_command_name',  # name of above
+    'script_command_line',  # original command line
     'script_fullname',      # sys.argv[0]
     'script_name',          # above without path
     'script_verbosity',     # vebosity level from command line
@@ -210,10 +212,11 @@ for arg in sys.argv:
             SCRIPTION_DEBUG = 5
 
 module = verbose = script_main = None
-script_fullname = script_name = script_verbosity = script_command = script_command_name = None
+script_fullname = script_name = script_verbosity = script_command = script_command_name = script_command_line = None
 script_abort_message = script_exception_lines = None
 script_module = {}
 script_commands = {}
+script_aliases = {}
 
 registered = False
 run_once = False
@@ -495,7 +498,7 @@ def _func_globals(func):
 def _get_version(from_module, _try_other=True):
     for ver in _version_strings:
         if from_module.get(ver):
-            version = getattr(from_module, ver)
+            version = from_module.get(ver)
             if not isinstance(version, basestring):
                 version = '.'.join([str(x) for x in version])
             break
@@ -507,17 +510,20 @@ def _get_version(from_module, _try_other=True):
             version = 'unknown'
         else:
             if package in sys.modules and any(hasattr(sys.modules[package], v) for v in _version_strings):
-                version = sys.modules[package].version
+                for ver in _version_strings:
+                    version = getattr(sys.modules[package], ver, '')
+                    if version:
+                        break
                 if not isinstance(version, basestring):
                     version = '.'.join([str(x) for x in version])
             elif _try_other:
                 version = ' / '.join(_get_all_versions(from_module, _try_other=False))
             if not version.strip():
                 version = 'unknown'
-    return version + ' running on Python %s' % '.'.join([str(i) for i in sys.version_info])
+    return version
 
 def _get_all_versions(from_module, _try_other=True):
-    versions = []
+    versions = ['%s=%s' % (from_module['module']['script_name'], _get_version(from_module, _try_other=False))]
     for name, module in sys.modules.items():
         fm_obj = from_module.get(name)
         if fm_obj is module:
@@ -750,6 +756,7 @@ def _init_script_module(func):
     script_module['script_name'] = '<unknown>'
     script_module['script_main'] = THREAD_STORAGE.script_main
     script_module['script_commands'] = {}
+    script_module['script_aliases'] = {}
     script_module['script_command'] = None
     script_module['script_command_name'] = ''
     script_module['script_fullname'] = ''
@@ -767,7 +774,7 @@ class NameSpace(object):
 
     def __repr__(self):
         return '%s(%r)' % (self.__class__.__name__, self.__dict__)
-    
+
     def __eq__(self, other):
         if not isinstance(other, self.__class__):
             return NotImplemented
@@ -780,20 +787,20 @@ class NameSpace(object):
 
     def __contains__(self, name):
         return name in self.__dict__
-    
+
     def __iter__(self):
         for key, value in sorted(self.__dict__.items()):
             yield key, value
-    
+
     def __getitem__(self, name):
         try:
             return self.__dict__[name]
         except KeyError:
             raise ScriptionError("namespace object has nothing named %r" % name)
-    
+
     def __setitem__(self, name, value):
         self.__dict__[name] = value
-    
+
     def get(self, key, default=None):
         # deprecated, will be removed by 1.0
         try:
@@ -1209,16 +1216,36 @@ def _usage(func, param_line_args):
 ## required
 class Alias(object):
     "adds aliases for the function"
-    def __init__(self, *aliases):
+    def __init__(self, *aliases, **canonical):
         scription_debug('recording aliases', aliases, verbose=2)
+        if len(canonical) > 1:
+            raise TypeError('invalid keywords: %s' % ', '.join(repr(k) for k in canonical))
+        elif canonical and 'canonical' not in canonical:
+            raise ScriptionError('invalid keyword: %s' % ', '.join(repr(k) for k in canonical))
         self.aliases = aliases
+        self.canonical = canonical.get('canonical', False)
     def __call__(self, func):
         scription_debug('applying aliases to', func.__name__, verbose=2)
         if not script_module:
             _init_script_module(func)
+        canonical = self.canonical
+        if canonical:
+            func_name = func.__name__.replace('_', '-').lower()
+            try:
+                del script_module['script_commands'][func_name]
+            except KeyError:
+                raise ScriptionError('canonical Alias %r must run after (be placed before) its Command' % self.aliases[0])
         for alias in self.aliases:
-            alias_name = alias.replace('_', '-')
-            script_module['script_commands'][alias_name] = func
+            alias_name = alias.replace('_', '-').lower()
+            if alias_name in script_module['script_commands']:
+                raise ScriptionError('alias %r already in use as command %r' % (alias_name, alias_name))
+            elif alias_name in script_module['script_aliases']:
+                raise ScriptionError('alias %r already in use for command %r' % (alias_name, script_module['script_aliases'][alias_name]))
+            if canonical:
+                script_module['script_commands'][alias_name] = func
+                canonical = False
+            else:
+                script_module['script_aliases'][alias_name] = func
         return func
 
 
@@ -1241,12 +1268,16 @@ class Command(object):
         if func.__doc__ is not None:
             func.__doc__ = textwrap.dedent(func.__doc__).strip()
         _add_annotations(func, self.annotations)
-        func_name = func.__name__.replace('_', '-')
+        func_name = func.__name__.replace('_', '-').lower()
         if func_name.startswith('-'):
             # internal name, possibly shadowing a keyword or data type -- an alias will be needed
             # to access this command
             pass
         else:
+            if func_name in script_module['script_commands']:
+                raise ScriptionError('command name %r already defined' % (func_name, ))
+            elif func_name in script_module['script_aliases']:
+                raise ScriptionError('command name %r already defined as an alias' % (func_name, ))
             script_module['script_commands'][func_name] = func
         _help(func)
         return func
@@ -1291,7 +1322,7 @@ class Script(object):
             _init_script_module(func)
         if script_module['script_commands']:
             raise ScriptionError('Script must be defined before any Command')
-        func_name = func.__name__.replace('_', '-')
+        func_name = func.__name__.replace('_', '-').lower()
         if func_name in script_module['script_commands']:
             raise ScriptionError('%r cannot be both Command and Script' % func_name)
         if func.__doc__ is not None:
@@ -1462,8 +1493,11 @@ def Run():
         SYS_ARGS = [arg.decode(LOCALE_ENCODING) for arg in sys.argv]
     else:
         SYS_ARGS = sys.argv[:]
+    script_module['script_command_line'] = SYS_ARGS
     Script = script_module['script_main']
     Command = script_module['script_commands']
+    Alias = script_module['script_aliases']
+    Alias.update(Command)
     try:
         prog_path, prog_name = os.path.split(SYS_ARGS[0])
         if prog_name == '__main__.py':
@@ -1488,27 +1522,27 @@ def Run():
                 sys.exit(Exit.Success)
             else:
                 func_name = func_name.replace('_', '-')
-        func = Command.get(func_name)
+        func = Alias.get(func_name)
         if func is not None:
             prog_name = SYS_ARGS[1].lower()
             param_line = [prog_name] + SYS_ARGS[2:]
         else:
-            func = Command.get(prog_name.lower(), None)
+            func = Alias.get(prog_name.lower())
             if func is None and prog_name.lower().endswith('.py'):
-                func = Command.get(prog_name.lower()[:-3], None)
+                func = Alias.get(prog_name.lower()[:-3])
             if func is not None and func_name != '--help':
                 param_line = [prog_name] + SYS_ARGS[1:]
             else:
-                prog_name_is_command = prog_name.lower() in Command
+                prog_name_is_command = prog_name.lower() in Alias
                 if not prog_name_is_command and prog_name.lower().endswith('.py'):
-                    prog_name_is_command = prog_name.lower()[:-3] in Command
+                    prog_name_is_command = prog_name.lower()[:-3] in Alias
                 if script_module['__doc__']:
                     _print(script_module['__doc__'].strip())
                 if len(Command) == 1:
                     _detail_help = True
                 else:
                     _detail_help = False
-                    _name_length = max([len(name) for name in Command])
+                    _name_length = max([len(name) for name in Alias])
                 if not (_detail_help or script_module['__doc__']):
                     _print("Available commands/options in", script_module['script_name'])
                 if Script and Script.__usage__:
@@ -2045,7 +2079,7 @@ class Job(object):
         return True
 
     def kill(self, error='raise'):
-        '''kills child job, or raises UnableToKillJob                              
+        '''kills child job, or raises UnableToKillJob
 
         parent method'''
         exc = None
@@ -2162,7 +2196,7 @@ class Job(object):
     def terminate(self):
         '''
         Send SIGTERM to child.
-        
+
         parent method'''
         scription_debug('terminating')
         if self.is_alive() and self.kill_signals:

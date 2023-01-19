@@ -115,25 +115,19 @@ class Path(object):
     if _py_ver >= (2, 6) and not _is_win:
         @classmethod
         def chflags(cls, flags, files):
-            if isinstance(files, cls.base_types):
-                files = Path.glob(files)
-            for file in files:
+            for file in cls._ensure(files):
                 Path(file).chflags(flags)
 
     @classmethod
     def chmod(cls, mode, files):
         "thin wrapper around os.chmod"
-        if isinstance(files, cls.base_types):
-            files = Path.glob(files)
-        for file in files:
+        for file in cls._ensure(files):
             Path(file).chmod(mode)
 
     @classmethod
     def chown(cls, uid, gid, files):
         "thin wrapper around os.chown"
-        if isinstance(files, cls.base_types):
-            files = Path.glob(files)
-        for file in files:
+        for file in cls._ensure(files):
             Path(file).chown(uid, gid)
 
     if not _is_win:
@@ -177,9 +171,9 @@ class Path(object):
         """
         thin wrapper around shutil.copy2  (files is optional)
         """
-        if isinstance(files, cls.base_types):
-            files = Path.glob(files)
-        for file in files:
+        if not dst:
+            raise ValueError('invalid dst: <%s>' % (dst, ))
+        for file in cls._ensure(files):
             Path(file).copy(dst)
 
     @staticmethod
@@ -240,27 +234,21 @@ class Path(object):
 
         @classmethod
         def lchmod(cls, mode, files):
-            if isinstance(files, cls.base_types):
-                files = Path.glob(files)
-            for file in files:
+            for file in cls._ensure(files):
                 Path(file).lchmod(mode)
 
     if hasattr(_os, 'lchflags'):
 
         @classmethod
         def lchflags(cls, files, flags):
-            if isinstance(files, cls.base_types):
-                files = Path.glob(files)
-            for file in files:
+            for file in cls._ensure(files):
                 Path(file).lchflags(flags)
 
     if hasattr(_os, 'lchown'):
 
         @classmethod
         def lchown(cls, files, uid, gid):
-            if isinstance(files, cls.base_types):
-                files = Path.glob(files)
-            for file in files:
+            for file in cls._ensure(files):
                 Path(file).lchown(uid, gid)
 
     if hasattr(_os.path, 'lexists'):
@@ -296,9 +284,9 @@ class Path(object):
     @classmethod
     def move(cls, sources, dst):
         dst = Path(dst)
-        if isinstance(sources, cls.base_types):
-            sources = Path.glob(sources)
-        for source in sources:
+        if not dst:
+            raise ValueError('invalid dst: <%s>' % (dst, ))
+        for source in cls._ensure(sources):
             Path(source).move(dst)
         return dst
 
@@ -337,9 +325,7 @@ class Path(object):
 
     @classmethod
     def removedirs(cls, subdirs):
-        if isinstance(subdirs, cls.base_types):
-            subdirs = Path.glob(subdirs)
-        for subdir in subdirs:
+        for subdir in cls._ensure(subdirs):
             Path(subdir).removedirs()
 
     @staticmethod
@@ -352,16 +338,12 @@ class Path(object):
 
     @classmethod
     def rmdir(cls, subdirs):
-        if isinstance(subdirs, cls.base_types):
-            subdirs = Path.glob(subdirs)
-        for subdir in subdirs:
+        for subdir in cls._ensure(subdirs):
             Path(subdir).rmdir()
 
     @classmethod
     def rmtree(cls, subdirs, ignore_errors=None, onerror=None):
-        if isinstance(subdirs, cls.base_types):
-            subdirs = Path.glob(subdirs)
-        for subdir in subdirs:
+        for subdir in cls._ensure(subdirs):
             Path(subdir).rmtree(ignore_errors=ignore_errors, onerror=onerror)
 
     @staticmethod
@@ -384,24 +366,17 @@ class Path(object):
 
     @classmethod
     def touch(cls, names, times=None, no_create=False, reference=None):
-        if isinstance(names, cls.base_types):
-            names = Path.glob(names) or [names]
-        for name in names:
+        for name in cls._ensure(names, no_glob_okay=True):
             Path(name).touch(None, times, no_create, reference)
-
 
     @classmethod
     def unlink(cls, names):
-        if isinstance(names, cls.base_types):
-            names = Path.glob(names)
-        for name in names:
+        for name in cls._ensure(names):
             Path(name).unlink()
 
     @classmethod
     def utime(cls, names, times):
-        if isinstance(names, cls.base_types):
-            names = Path.glob(names)
-        for name in names:
+        for name in cls._ensure(names):
             Path(name).utime(times)
 
     if _py_ver >= (2, 6):
@@ -423,17 +398,33 @@ class Path(object):
                 dirnames[:] = [p(dn) for dn in dirnames]
                 filenames[:] = [p(fn) for fn in filenames]
                 yield dirpath, dirnames, filenames
+
+    @classmethod
+    def _ensure(cls, entries, no_glob_okay=False):
+        if not entries:
+            raise OSError(2, "No such file or directory: '%s'" % (entries, ))
+        o_entries = entries
+        if isinstance(entries, cls.base_types):
+            entries = Path.glob(entries)
+        if not entries and no_glob_okay:
+            entries = o_entries
+        if not entries:
+            raise OSError(2, "No such file or directory: '%s'" % (o_entries, ))
+        return entries
 Path.base_types = bytes, str, unicode
+
 
 class Methods(object):
 
     def __new__(cls, *paths):
         slash = cls._SLASH
+        as_is_value = False
         if not paths:
             paths = (cls._EMPTY, )
         elif len(paths) == 1:
             if isinstance(paths[0], Path):
                 paths = (paths[0]._value_, )
+            as_is_value = paths[0]
         elif len(paths) > 1:
             # convert sys_sep to '/' (no-op unless on windows)
             paths = tuple([
@@ -493,9 +484,9 @@ class Methods(object):
                 else:
                     base = filename
         df_sep = cls._EMPTY
-        if dirs and dirs != slash and filename:
+        if dirs and dirs != slash:
             df_sep = slash
-        value = vol + dirs + df_sep + filename
+        value = as_is_value or (vol + dirs + df_sep + filename)
         p = cls.data_type.__new__(cls, value)
         p._value_ = value
         p._vol = vol
@@ -589,12 +580,10 @@ class Methods(object):
         if other._vol:
             if self:
                 raise ValueError("Cannot combine %r and %r" % (self, other))
-        t_slash = len(other._dirname) > 1 and not other._filename and self._SLASH or self._EMPTY
         return self.__class__(
                 self._value_.rstrip(self._SLASH) +
                 self._SLASH +
-                other._value_.lstrip(self._SLASH) +
-                t_slash
+                other._value_.lstrip(self._SLASH)
                 )
     __truediv__ = __div__
 
@@ -672,10 +661,7 @@ class Methods(object):
             return NotImplemented
         elif isinstance(other, self.data_types):
             other = Path(other)
-        if self._dirs and not self._filename:
-            return other / self / self._EMPTY
-        else:
-            return other / self
+        return other / self
     __rtruediv__ = __rdiv__
 
     def __repr__(self):
@@ -707,11 +693,7 @@ class Methods(object):
         elif isinstance(other, self.data_types):
             other = Path(other)
         s = self._value_
-        if len(self._dirs) > 1 and not self._filename:
-            s += self._SLASH
         o = other._value_
-        if len(other._dirs) > 1 and not other._filename:
-            o += other._SLASH
         if not s.startswith(o):
             raise ValueError("cannot subtract %r from %r" % (other, self))
         return Path(s[len(o):])
@@ -882,14 +864,43 @@ class Methods(object):
         def copytree(self, dst, symlinks=False):
             'thin wrapper around shutil.copytree'
             src, dst = base_class(self, dst)
-            _shutil.copytree(src, dst, symlinks)
+            return _shutil.copytree(src, dst, symlinks) or dst
 
-    else:
+    elif _py_ver < (3, 2):
 
         def copytree(self, dst, symlinks=False, ignore=None):
             'thin wrapper around shutil.copytree'
             src, dst = base_class(self, dst)
-            _shutil.copytree(src, dst, symlinks, ignore)
+            return _shutil.copytree(src, dst, symlinks, ignore) or dst
+
+    elif _py_ver < (3, 8):
+
+        def copytree(self, dst, symlinks=False, ignore=None, copy_function=None, ignore_dangling_symlinks=False):
+            'thin wrapper around shutil.copytree'
+            src, dst = base_class(self, dst)
+            kwds = {
+                    'symlinks': symlinks,
+                    'ignore': ignore,
+                    'ignore_dangling_symlinks': ignore_dangling_symlinks,
+                    }
+            if copy_function:
+                kwds['copy_function'] = copy_function
+            return _shutil.copytree(src, dst, **kwds) or dst
+
+    else:
+
+        def copytree(self, dst, symlinks=False, ignore=None, copy_function=None, ignore_dangling_symlinks=False, dirs_exist_ok=False):
+            'thin wrapper around shutil.copytree'
+            src, dst = base_class(self, dst)
+            kwds = {
+                    'symlinks': symlinks,
+                    'ignore': ignore,
+                    'ignore_dangling_symlinks': ignore_dangling_symlinks,
+                    'dirs_exist_ok': dirs_exist_ok,
+                    }
+            if copy_function:
+                kwds['copy_function'] = copy_function
+            return _shutil.copytree(src, dst, **kwds) or dst
 
     def count(self, sub, start=None, end=None):
         new_sub = sub.replace(self._SYS_SEP, self._SLASH)
@@ -1170,8 +1181,11 @@ class Methods(object):
         dst = self.data_type(dst)
         for file in files:
             src = self.data_type(file)
-            _shutil.move(src, dst)
-        return dst
+            real_dst = dst
+            if _os.path.exists(real_dst) and _os.path.isdir(real_dst):
+                real_dst += self._SLASH + _os.path.basename(src.rstrip(self._SLASH))
+            _shutil.move(src, real_dst)
+        return real_dst
 
     def open(self, file_name=None, mode=None, buffering=None, encoding=None):
         """
@@ -1401,7 +1415,7 @@ class Methods(object):
                     pass
                 else:
                     file = self.data_type(file)
-                    with open(file, 'w') as fh:
+                    with open(file, 'w'):
                         pass
                     if times is not None:
                         _os.utime(file, times)
