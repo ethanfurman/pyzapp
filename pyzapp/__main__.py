@@ -18,6 +18,7 @@ except NameError:
     class ModuleNotFoundError(ImportError):
         pass
 
+version = 0, 4, 0
 
 # API
 
@@ -29,7 +30,7 @@ except NameError:
         compress=Spec('compress with DEFLATE [default: no compression]', FLAG),
         force=Spec('overwrite existing output file', FLAG),
         )
-def pyzapp(source, output, include, shebang, compress, force):
+def create(source, output, include, shebang, compress, force):
    # verify source
     if not source.exists():
         abort('unable to find %r' % source)
