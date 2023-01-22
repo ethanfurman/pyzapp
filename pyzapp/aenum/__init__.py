@@ -28,21 +28,22 @@ try:
 except ImportError:
     sqlite3 = None
 
+try:
+    RecursionError
+except NameError:
+    # python3.4
+    RecursionError = RuntimeError
+
 from operator import or_ as _or_, and_ as _and_, xor as _xor_, inv as _inv_
 from operator import abs as _abs_, add as _add_, floordiv as _floordiv_
 from operator import lshift as _lshift_, rshift as _rshift_, mod as _mod_
 from operator import mul as _mul_, neg as _neg_, pos as _pos_, pow as _pow_
 from operator import truediv as _truediv_, sub as _sub_
-if PY2:
-    from operator import div as _div_
 
+if PY2:
+    from ._py2 import *
 if PY3:
-    from inspect import getfullargspec
-    def getargspec(method):
-        args, varargs, keywords, defaults, _, _, _ = getfullargspec(method)
-        return args, varargs, keywords, defaults
-else:
-    from inspect import getargspec
+    from ._py3 import *
 
 obj_type = type
 
@@ -56,12 +57,13 @@ __all__ = [
         'enum', 'extend_enum', 'unique', 'property',
         'NamedTuple', 'SqliteEnum',
         'FlagBoundary', 'STRICT', 'CONFORM', 'EJECT', 'KEEP',
+        'add_stdlib_integration', 'remove_stdlib_integration'
         ]
 
 if sqlite3 is None:
     __all__.remove('SqliteEnum')
 
-version = 3, 1, 8
+version = 3, 1, 12, 1
 
 # shims
 try:
@@ -109,7 +111,7 @@ try:
         raise ImportError('wrong version')
     else:
         from enum import EnumMeta as StdlibEnumMeta, Enum as StdlibEnum, IntEnum as StdlibIntEnum
-        StdlibFlag = StdlibIntFlag = StdlibStrEnum = None
+        StdlibFlag = StdlibIntFlag = StdlibStrEnum = StdlibReprEnum = None
 except ImportError:
     StdlibEnumMeta = StdlibEnum = StdlibIntEnum = StdlibIntFlag = StdlibFlag = StdlibStrEnum = None
 
@@ -120,6 +122,10 @@ if StdlibEnum:
         pass
     try:
         from enum import StrEnum as StdlibStrEnum
+    except ImportError:
+        pass
+    try:
+        from enum import ReprEnum as StdlibReprEnum
     except ImportError:
         pass
 
@@ -333,6 +339,8 @@ if DynamicClassAttribute is None:
     DynamicClassAttribute = property
 # deprecated
 enum_property = property
+
+# more helpers
 
 class NonMember(object):
     """
@@ -1336,7 +1344,7 @@ class EnumConstants(NamedConstant):
     #
     # Ditto for Flag.
 
-Enum = ReprEnum = Flag = EJECT = KEEP = None
+Enum = ReprEnum = IntEnum = StrEnum = Flag = IntFlag = EJECT = KEEP = None
 
 class enum(object):
     """
@@ -2137,7 +2145,7 @@ class _EnumDict(dict):
 
 
 no_arg = SentinelType('no_arg', (object, ), {})
-class EnumType(StdlibEnumMeta or type):
+class EnumType(type):
     """Metaclass for Enum"""
 
     @classmethod
@@ -2631,7 +2639,7 @@ class EnumType(StdlibEnumMeta or type):
         """
         return True
 
-    def __call__(cls, value=no_arg, names=None, module=None, type=None, start=1, boundary=None):
+    def __call__(cls, value=no_arg, names=None, module=None, qualname=None, type=None, start=1, boundary=None):
         """Either returns an existing member, or creates a new enum class.
 
         This method is used both when an enum class is given a value to match
@@ -2649,7 +2657,7 @@ class EnumType(StdlibEnumMeta or type):
         if names is None:  # simple value lookup
             return cls.__new__(cls, value)
         # otherwise, functional API: we're creating a new Enum type
-        return cls._create_(value, names, module=module, type=type, start=start, boundary=boundary)
+        return cls._create_(value, names, module=module, qualname=qualname, type=type, start=start, boundary=boundary)
 
     def __contains__(cls, member):
         if not isinstance(member, Enum):
@@ -2799,7 +2807,7 @@ class EnumType(StdlibEnumMeta or type):
         module_globals[name] = cls
         return cls
 
-    def _create_(cls, class_name, names, module=None, type=None, start=1, boundary=None):
+    def _create_(cls, class_name, names, module=None, qualname=None, type=None, start=1, boundary=None):
         """Convenience method to create a new Enum class.
 
         `names` can be:
@@ -2866,6 +2874,8 @@ class EnumType(StdlibEnumMeta or type):
             _make_class_unpicklable(enum_class)
         else:
             enum_class.__module__ = module
+        if qualname is not None:
+            enum_class.__qualname__ = qualname
         return enum_class
 
     @classmethod
@@ -4019,9 +4029,105 @@ class module(object):
     def register(self):
         _sys.modules["%s.%s" % (self._parent_module, self.__name__)] = self
 
+class EnumCheck(StrEnum):
+    """
+    various conditions to check an enumeration for
+    """
+    CONTINUOUS = "no skipped integer values"
+    NAMED_FLAGS = "multi-flag aliases may not contain unnamed flags"
+    UNIQUE = "one name per value"
+CONTINUOUS, NAMED_FLAGS, UNIQUE = EnumCheck
+
+
+class verify:
+    """
+    Check an enumeration for various constraints. (see EnumCheck)
+    """
+    def __init__(self, *checks):
+        self.checks = checks
+    def __call__(self, enumeration):
+        checks = self.checks
+        cls_name = enumeration.__name__
+        if Flag is not None and issubclass(enumeration, Flag):
+            enum_type = 'flag'
+        elif issubclass(enumeration, Enum):
+            enum_type = 'enum'
+        else:
+            raise TypeError("the 'verify' decorator only works with Enum and Flag")
+        for check in checks:
+            if check is UNIQUE:
+                # check for duplicate names
+                duplicates = []
+                for name, member in enumeration.__members__.items():
+                    if name != member.name:
+                        duplicates.append((name, member.name))
+                if duplicates:
+                    alias_details = ', '.join(
+                            ["%s -> %s" % (alias, name) for (alias, name) in duplicates])
+                    raise ValueError('aliases found in %r: %s' %
+                            (enumeration, alias_details))
+            elif check is CONTINUOUS:
+                values = set(e.value for e in enumeration)
+                if len(values) < 2:
+                    continue
+                low, high = min(values), max(values)
+                missing = []
+                if enum_type == 'flag':
+                    # check for powers of two
+                    for i in range(_high_bit(low)+1, _high_bit(high)):
+                        if 2**i not in values:
+                            missing.append(2**i)
+                elif enum_type == 'enum':
+                    # check for powers of one
+                    for i in range(low+1, high):
+                        if i not in values:
+                            missing.append(i)
+                else:
+                    raise Exception('verify: unknown type %r' % enum_type)
+                if missing:
+                    raise ValueError(('invalid %s %r: missing values %s' % (
+                            enum_type, cls_name, ', '.join((str(m) for m in missing)))
+                            )[:256])
+                            # limit max length to protect against DOS attacks
+            elif check is NAMED_FLAGS:
+                # examine each alias and check for unnamed flags
+                member_names = enumeration._member_names_
+                member_values = [m.value for m in enumeration]
+                missing_names = []
+                missing_value = 0
+                for name, alias in enumeration._member_map_.items():
+                    if name in member_names:
+                        # not an alias
+                        continue
+                    if alias.value < 0:
+                        # negative numbers are not checked
+                        continue
+                    values = list(_iter_bits_lsb(alias.value))
+                    missed = [v for v in values if v not in member_values]
+                    if missed:
+                        missing_names.append(name)
+                        missing_value |= reduce(_or_, missed)
+                if missing_names:
+                    if len(missing_names) == 1:
+                        alias = 'alias %s is missing' % missing_names[0]
+                    else:
+                        alias = 'aliases %s and %s are missing' % (
+                                ', '.join(missing_names[:-1]), missing_names[-1]
+                                )
+                    if _is_single_bit(missing_value):
+                        value = 'value 0x%x' % missing_value
+                    else:
+                        value = 'combined values of 0x%x' % missing_value
+                    raise ValueError(
+                            'invalid Flag %r: %s %s [use enum.show_flag_values(value) for details]'
+                            % (cls_name, alias, value)
+                            )
+        return enumeration
 
 if StdlibEnumMeta:
+
     from _weakrefset import WeakSet
+
     def __subclasscheck__(cls, subclass):
         """
         Override for issubclass(subclass, cls).
@@ -4034,6 +4140,11 @@ if StdlibEnumMeta:
         except KeyError:
             cls._subclass_cache_ = WeakSet()
             cls._subclass_negative_cache_ = WeakSet()
+        except RecursionError:
+            import sys
+            exc, cls, tb = sys.exc_info()
+            exc = RecursionError('possible causes for endless recursion:\n    - __getattribute__ is not ignoring __dunder__ attibutes\n    - __instancecheck__ and/or __subclasscheck_ are (mutually) recursive\n    see `aenum.remove_stdlib_integration` for temporary work-around')
+            raise_from_none(exc)
         if subclass in cls._subclass_cache_:
             return True
         # Check negative cache
@@ -4046,11 +4157,6 @@ if StdlibEnumMeta:
         if cls in getattr(subclass, '__mro__', ()):
             cls._subclass_cache_.add(subclass)
             return True
-        # Check if it's a subclass of a subclass (recursive)
-        for scls in cls.__subclasses__():
-            if issubclass(subclass, scls):
-                cls._subclass_cache_.add(subclass)
-                return True
         # Check if it's an aenum.Enum|IntEnum|IntFlag|Flag subclass
         if cls is StdlibIntFlag and issubclass(subclass, IntFlag):
             cls._subclass_cache_.add(subclass)
@@ -4070,8 +4176,33 @@ if StdlibEnumMeta:
 
     def __instancecheck__(cls, instance):
         subclass = instance.__class__
-        return cls.__subclasscheck__(subclass)
+        try:
+            return cls.__subclasscheck__(subclass)
+        except RecursionError:
+            import sys
+            exc, cls, tb = sys.exc_info()
+            exc = RecursionError('possible causes for endless recursion:\n    - __getattribute__ is not ignoring __dunder__ attibutes\n    - __instancecheck__ and/or __subclasscheck_ are (mutually) recursive\n    see `aenum.remove_stdlib_integration` for temporary work-around')
+            raise_from_none(exc)
 
     StdlibEnumMeta.__subclasscheck__ = __subclasscheck__
     StdlibEnumMeta.__instancecheck__ = __instancecheck__
+
+def add_stdlib_integration():
+    if StdlibEnum:
+        StdlibEnumMeta.__subclasscheck__ = __subclasscheck__
+        StdlibEnumMeta.__instancecheck__ = __instancecheck__
+
+def remove_stdlib_integration():
+    """
+    Remove the __instancecheck__ and __subclasscheck__ overrides from the stdlib Enum.
+
+    Those overrides are in place so that code detecting stdlib enums will also detect
+    aenum enums.  If a buggy __getattribute__, __instancecheck__, or __subclasscheck__
+    is defined on a custom EnumMeta then RecursionErrors can result; using this
+    function after importing aenum will solve that problem, but the better solution is
+    to fix the buggy method.
+    """
+    if StdlibEnum:
+        del StdlibEnumMeta.__instancecheck__
+        del StdlibEnumMeta.__subclasscheck__
 
