@@ -4,8 +4,8 @@
 
 from __future__ import print_function
 
-from _scription import *
-from _antipathy import Path
+from scription import *
+from antipathy import Path
 from tempfile import mkdtemp
 from textwrap import dedent
 from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
