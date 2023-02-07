@@ -85,7 +85,7 @@ class NullHandler(logging.Handler):
 logger = logging.getLogger('pandaemonium')
 logger.addHandler(NullHandler())
 
-version = 0, 9, 0
+version = 0, 9, 2, 1
 
 STDIN = 0
 STDOUT = 1
@@ -536,6 +536,8 @@ class PidLockFile(object):
         if not file_name or file_name[0] != '/':
             raise LockError("%r is not an absolute path" % file_name)
         self.file_name = file_name
+        if timeout is None:
+            timeout = 0
         self.timeout = timeout
         self.reentrant = reentrant
         self._file_obj = None
@@ -945,10 +947,12 @@ def started_by_super_server():
 
     This is apparent by the std streams being bound to a socket.
     """
-    sock = socket.fromfd(STDIN, socket.AF_INET, socket.SOCK_STREAM)
     try:
+        sock = socket.fromfd(STDIN, socket.AF_INET, socket.SOCK_STREAM)
         sock.getsockname()
-    except socket.error:
+        sock = None
+    except (OSError, socket.error):
+        sock = None
         exc = sys.exc_info()[1]
         if exc.errno == errno.ENOTSOCK:
             return False

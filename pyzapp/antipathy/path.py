@@ -1158,8 +1158,9 @@ class Methods(object):
         else:
             subdirs = [d for ds in subdirs for d in self.glob(ds)]
         for subdir in subdirs:
-            # path = subdir.vol
-            path = Path()
+            path = Path('.')
+            if subdir.isabs():
+                path = Path()
             elements = subdir.elements
             for i, dir in enumerate(elements, start=4):
                 path /= dir
