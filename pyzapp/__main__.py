@@ -12,6 +12,7 @@ from tempfile import mkdtemp
 from textwrap import dedent
 from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
 
+import antipathy, scription
 import sys
 
 try:
