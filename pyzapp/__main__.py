@@ -1,5 +1,7 @@
 #!/usr/bin/env python2
-
+"""
+Create python executable zip files.
+"""
 # imports
 
 from __future__ import print_function
@@ -287,6 +289,38 @@ def create(source, output, include, shebang, compress, force):
                         zf.write(f, arcname=arcname)
     output.chmod(0o555)
     source_dir.rmtree()
+
+
+@Command(
+        name=Spec('name of folder for new script', type=Path)
+        )
+def init(name):
+    """
+    Create directory structure for new script NAME.
+    """
+    print('initializing %s' % name)
+    if name.exists():
+        abort("%s already exists" % name)
+    name.makedirs()
+    for folder, files in (
+            ('aenum', (('LICENSE', 'README', '__init__.py', '_py2.py', '_py3.py'))),
+            ('antipathy', (('LICENSE', 'README', '__init__.py', 'path.py'))),
+            ('dbf', (('LICENSE', '__init__.py'))),
+            ('pandaemonium', (('LICENSE', '__init__.py'))),
+            ('scription', (('LICENSE', '__init__.py'))),
+            ('stonemark', (('LICENSE', '__init__.py', '__main__.py'))),
+            ):
+        print('processing %s' % folder)
+        folder = Path(folder)
+        name.mkdir(folder)
+        for filename in files:
+            print('   %s/%s' % (folder, filename), end=' . . . ')
+            with open('pyzapp'/folder/filename, 'rb') as fh:
+                data = fh.read()
+            with open(name/folder/filename, 'wb') as fh:
+                fh.write(data)
+            print('copied')
+    print('done')
 
 
 # helpers
