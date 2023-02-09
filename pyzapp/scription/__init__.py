@@ -33,7 +33,7 @@ intelligently parses command lines
 from __future__ import print_function
 
 # version
-version = 0, 86, 14
+version = 0, 86, 15
 
 # imports
 import sys
@@ -80,7 +80,6 @@ import codecs
 import datetime
 import email
 import errno
-import inspect
 import locale
 import logging
 import os
@@ -92,7 +91,7 @@ import textwrap
 import threading
 import time
 import traceback
-from aenum import Enum, IntEnum, Flag, export, version as aenum_version
+from aenum import Enum, IntEnum, Flag, export
 from collections import OrderedDict
 from math import floor
 from sys import stdin, stdout, stderr
@@ -141,6 +140,9 @@ else:
             raise exc.with_traceback(tb)
             '''))
 
+    # keep pyflakes happy
+builtins
+
 def _input(*args, **kwds):
     from warnings import warn
     warn('`_input` is deprecated; use `raw_input` instead.', stacklevel=2)
@@ -151,7 +153,7 @@ def _input(*args, **kwds):
 __all__ = (
     'Alias', 'Command', 'Script', 'Main', 'Run', 'Spec',
     'Bool','InputFile', 'OutputFile', 'IniError', 'IniFile', 'OrmError', 'OrmFile', 'NameSpace', 'OrmSection',
-    'FLAG', 'KEYWORD', 'OPTION', 'MULTI', 'MULTIREQ', 'REQUIRED', 'RADIO',
+    'FLAG', 'OPTION', 'MULTI', 'MULTIREQ', 'REQUIRED',
     'ScriptionError', 'ExecuteError', 'FailedPassword', 'TimeoutError', 'Execute', 'Job', 'ProgressView', 'ViewProgress',
     'abort', 'echo', 'error', 'get_response', 'help', 'input', 'raw_input', 'mail', 'user_ids', 'print', 'box', 'table_display',
     'stdout', 'stderr', 'wait_and_check', 'b', 'bytes', 'str', 'u', 'unicode', 'ColorTemplate', 'Color',
@@ -376,8 +378,6 @@ class SpecKind(DocEnum):
     MULTI = "multiple values per name (list form, no whitespace)"
     MULTIREQ = "multiple values per name (list form, no whitespace, required)"
     FLAG = "boolean/trivalent value per name"
-    KEYWORD = "unknown options"
-    RADIO = "mutually exclusive flags/options"
 
 
 # exceptions
@@ -896,6 +896,7 @@ def _usage(func, param_line_args):
         scription_debug('kwd_arg_spec', kwd_arg_spec, verbose=3)
         annotations.update(Script.command.__scription__)
     annotations.update(func.__scription__)
+    scription_debug('annotations: %r' % annotations, verbose=2)
     if func._var_arg:
         var_arg_spec = func._var_arg
     if func._kwd_arg:
@@ -1005,7 +1006,7 @@ def _usage(func, param_line_args):
                 scription_debug('name & value', verbose=2)
                 item, value = item.split('=', 1)
             item = item.replace('-','_')
-            if item.lower() == 'verbose':
+            if item.lower() == 'verbose' and 'verbose' not in annotations:
                 scription_debug('verbosity option', verbose=2)
                 try:
                     VERBOSITY = int(value)
@@ -1040,12 +1041,14 @@ def _usage(func, param_line_args):
                     value = annote.type(value)
                     annote._cli_value = value
                 # check for other radio set
-                scription_debug('checking radio settings for flag %s' % (item, ), verbose=2)
-                if value and annote._radio:
+                scription_debug('checking radio setting %r for flag %s in %r' % (annote._radio, item, radio), verbose=2)
+                scription_debug('value: %r' % (value, ), verbose=2)
+                if annote._radio:
                     if annote._radio in radio:
                         raise ScriptionError('only one of %s may be specified'
                                 % _and_list(func.radio[annote._radio]))
                     radio.add(annote._radio)
+                    scription_debug('radio settings: %r' % radio, verbose=2)
                 value = None
             elif annote.kind in ('multi', 'option'):
                 scription_debug('(multi)option' , verbose=2)
@@ -1064,12 +1067,14 @@ def _usage(func, param_line_args):
                     if annote.choices and value not in annote.choices:
                         raise ScriptionError('%s: %r not in [ %s ]' % (annote.usage, value, ' | '.join(annote.choices)), use_help=True)
                     annote._cli_value = annote.type(value)
-                    scription_debug('checking radio settings for option %s' % (item, ), verbose=2)
+                    scription_debug('checking radio setting %r for option %s in %r' % (annote._radio, item, radio), verbose=2)
+                    scription_debug('value: %r' % (value, ), verbose=2)
                     if annote._radio:
                         if annote._radio in radio:
                             raise ScriptionError('only one of %s may be specified'
                                     % _and_list(func.radio[annote._radio]))
                         radio.add(annote._radio)
+                        scription_debug('radio settings: %r' % radio, verbose=2)
                 else:
                     scription_debug('processing as multi-option', verbose=2)
                     # value could be a list of comma-separated values
@@ -1232,6 +1237,7 @@ class Alias(object):
         if canonical:
             func_name = func.__name__.replace('_', '-').lower()
             try:
+                script_module['script_aliases'][func_name] = func
                 del script_module['script_commands'][func_name]
             except KeyError:
                 raise ScriptionError('canonical Alias %r must run after (be placed before) its Command' % self.aliases[0])
