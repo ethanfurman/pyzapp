@@ -15,6 +15,8 @@ from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
 import antipathy, scription
 import sys
 
+antipathy, scription
+
 try:
     ModuleNotFoundError
 except NameError:
@@ -195,13 +197,15 @@ def create(source, output, include, shebang, compress, force):
                         return False
 
                 def pyzapp_exists(filename):
-                    return exists_in_pyzapp(filename) or os_path_exists(filename)
+                    if filename.startswith('PYZAPP/'):
+                        filename = filename[7:]
+                        return exists_in_pyzapp(filename)
+                    return os_path_exists(filename)
                 os.path.exists = pyzapp_exists
 
                 def pyzapp_open(filename, *args, **kwds):
-                    if not exists_in_pyzapp(filename):
-                        return bltn_open(filename, *args, **kwds)
-                    else:
+                    if filename.startswith('PYZAPP/'):
+                        filename = filename[7:]
                         if args:
                             mode = args[0]
                         else:
@@ -212,15 +216,19 @@ def create(source, output, include, shebang, compress, force):
                             return archive.open(filename, mode)
                         except KeyError:
                             raise OSError(errno.ENOENT, os.strerror(errno.ENOENT), filename)
+                    else:
+                        return bltn_open(filename, *args, **kwds)
 
                 try:
                     import __builtin__
                     bltn_open = __builtin__.open
                     __builtin__.open = pyzapp_open
+                    __builtin__.PYZAPP_ARCHIVE = zip_dir
                 except ImportError:
                     import builtins
                     bltn_open = builtins.open
                     builtins.open = pyzapp_open
+                    builtins.PYZAPP_ARCHIVE = zip_dir
 
                 from zipfile import ZipFile
                 archive = ZipFile(bltn_open(zip, 'rb'))
@@ -316,7 +324,7 @@ def init(name):
         name.mkdir(folder)
         for filename in files:
             print('   %s/%s' % (folder, filename), end=' . . . ')
-            with open('pyzapp'/folder/filename, 'rb') as fh:
+            with open('PYZAPP/pyzapp'/folder/filename, 'rb') as fh:
                 data = fh.read()
             with open(name/folder/filename, 'wb') as fh:
                 fh.write(data)
