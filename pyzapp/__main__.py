@@ -325,7 +325,8 @@ def init(name, _modules=None):
             continue
         print('processing %s' % folder)
         folder = Path(folder)
-        name.mkdir(folder)
+        if not _modules:
+            name.mkdir(folder)
         for filename in files:
             print('   %s/%s' % (folder, filename), end=' . . . ')
             with open('PYZAPP/pyzapp'/folder/filename, 'rb') as fh:
@@ -343,9 +344,12 @@ def update(app, *modules):
     """
     update supported dependencies in app's source folder
     """
-    echo('%r  %r ' % (app, modules))
     if not app.exists():
         abort('unable to find "%s"' % app)
+    if not modules:
+        # get installed modules
+        for _, modules, _ in app.walk():
+            break
     init(app, modules)
 
 
