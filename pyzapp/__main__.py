@@ -12,10 +12,10 @@ from tempfile import mkdtemp
 from textwrap import dedent
 from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
 
-import antipathy, scription
-import sys
+import aenum, antipathy, dbf, pandaemonium, stonemark, scription, xaml
+import sys as _sys
 
-antipathy, scription
+aenum, antipathy, dbf, pandaemonium, stonemark, scription, xaml
 
 try:
     ModuleNotFoundError
@@ -154,8 +154,8 @@ def create(source, output, include, shebang, compress, force):
         # include files from command line
         for inc_module_name in include:
             new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % inc_module_name)
-            if inc_module_name in sys.modules:
-                module_path = Path(sys.modules[inc_module_name].__file__)
+            if inc_module_name in _sys.modules:
+                module_path = Path(_sys.modules[inc_module_name].__file__)
             else:
                 print('  importing', inc_module_name, verbose=2)
                 module_path = Path(find_module(inc_module_name))
@@ -268,8 +268,8 @@ def create(source, output, include, shebang, compress, force):
             # add INCLUDE modules
             for inc_module_name in include:
                 print('including %r' % inc_module_name)
-                if inc_module_name in sys.modules:
-                    module_path = Path(sys.modules[inc_module_name].__file__)
+                if inc_module_name in _sys.modules:
+                    module_path = Path(_sys.modules[inc_module_name].__file__)
                 else:
                     module_path = Path(find_module(inc_module_name))
                 module_file = module_path.stem
@@ -303,14 +303,15 @@ def create(source, output, include, shebang, compress, force):
 @Command(
         name=Spec('name of folder for new script', type=Path)
         )
-def init(name):
+def init(name, _modules=None):
     """
     Create directory structure for new script NAME.
     """
-    print('initializing %s' % name)
-    if name.exists():
-        abort("%s already exists" % name)
-    name.makedirs()
+    if not _modules:
+        print('initializing %s' % name)
+        if name.exists():
+            abort("%s already exists" % name)
+        name.makedirs()
     for folder, files in (
             ('aenum', (('LICENSE', 'README', '__init__.py', '_py2.py', '_py3.py'))),
             ('antipathy', (('LICENSE', 'README', '__init__.py', 'path.py'))),
@@ -319,6 +320,9 @@ def init(name):
             ('scription', (('LICENSE', '__init__.py'))),
             ('stonemark', (('LICENSE', '__init__.py', '__main__.py'))),
             ):
+        if _modules and folder not in _modules:
+            print('skipping %s' % folder)
+            continue
         print('processing %s' % folder)
         folder = Path(folder)
         name.mkdir(folder)
@@ -331,12 +335,25 @@ def init(name):
             print('copied')
     print('done')
 
+@Command(
+        app=Spec('pyzapp path/app to update', type=Path),
+        modules=Spec('which modules to update',),
+        )
+def update(app, *modules):
+    """
+    update supported dependencies in app's source folder
+    """
+    echo('%r  %r ' % (app, modules))
+    if not app.exists():
+        abort('unable to find "%s"' % app)
+    init(app, modules)
+
 
 # helpers
 
 def find_module(name):
     init = Path('__init__.py')
-    for p in sys.path:
+    for p in _sys.path:
         path = Path(p)
         if path.exists(name/init):
             return path/name/init
