@@ -33,7 +33,7 @@ intelligently parses command lines
 from __future__ import print_function
 
 # version
-version = 0, 86, 17
+version = 0, 86, 19
 
 # imports
 import sys
@@ -46,6 +46,7 @@ PY33 = (3, 3)
 PY34 = (3, 4)
 PY35 = (3, 5)
 PY36 = (3, 6)
+ModuleType = type(sys)
 
 is_win = sys.platform.startswith('win')
 if is_win:
@@ -523,17 +524,22 @@ def _get_version(from_module, _try_other=True):
     return version
 
 def _get_all_versions(from_module, _try_other=True):
+    scription_debug('getting all versions', verbose=2)
     versions = ['%s=%s' % (from_module['module']['script_name'], _get_version(from_module, _try_other=False))]
-    for name, module in sys.modules.items():
-        fm_obj = from_module.get(name)
-        if fm_obj is module:
-            for ver in _version_strings:
-                if hasattr(module, ver):
-                    version = getattr(module, ver)
-                    if not isinstance(version, basestring):
-                        version = '.'.join(['%s' % x for x in version])
-                    versions.append('%s=%s' % (name, version))
-                    break
+    for name, obj in from_module.items():
+        if name.startswith('_') or not isinstance(obj, ModuleType):
+            continue
+        scription_debug('checking', name, verbose=2)
+        for ver in _version_strings:
+            scription_debug('  looking for', ver, verbose=3)
+            if hasattr(obj, ver):
+                version = getattr(obj, ver)
+                if not isinstance(version, basestring):
+                    version = '.'.join(['%s' % x for x in version])
+                versions.append('%s=%s' % (name, version))
+                break
+        else:
+            versions.append('%s=unknown' % (name, ))
     versions.append('python=%s' % '.'.join([str(i) for i in sys.version_info]))
     return versions
 
@@ -664,10 +670,10 @@ def _help(func, script=False):
                         new_dflt.append(annote.type(d))
                     annote._script_default = tuple(new_dflt)
     # also prepare help for global options
-    global_params = [n for n in func.names if n not in func.all_params]
+    targeted_params = [n for n in func.names if n not in func.all_params]
     print_params = []
     in_required = True
-    for param in global_params + params:
+    for param in params + targeted_params:
         if param[0] == '_':
             # ignore private params
             continue
@@ -699,17 +705,12 @@ def _help(func, script=False):
             usage.append('    ' + line)
         usage.append('')
     name_order = []
-    in_params = False
-    for name in global_params + ['start'] + params:
+    for name in params + targeted_params:
         if name[0] == '_':
             # ignore private params
             continue
-        if name == 'start':
-            in_params = True
-            continue
         annote = annotations[name]
-        if in_params and annote.kind != 'required':
-            in_params = False
+        if annote.kind != 'required':
             if vararg and func._var_arg.kind == 'multireq':
                 name_order.append(vararg[0])
         name_order.append(name)
@@ -1462,7 +1463,7 @@ class Spec(object):
                 else:
                     value = self.type(value)
             scription_debug('     final --> %r' % (value, ), verbose=2)
-        elif self._type_default is not empty:
+        elif self._type_default is not empty and self.kind != 'multireq':
             value = self._type_default
             scription_debug('   type default --> %r' % (value, ), verbose=2)
         else:
