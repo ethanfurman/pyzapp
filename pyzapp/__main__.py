@@ -26,7 +26,7 @@ except NameError:
 version = 0, 4, 0
 
 # API
-
+@Alias('create')
 @Command(
         source=Spec('script file or application directory', type=Path),
         output=Spec('output directory and/or name of pyzapp file', OPTION, type=Path),
@@ -35,7 +35,7 @@ version = 0, 4, 0
         compress=Spec('compress with DEFLATE [default: no compression]', FLAG),
         force=Spec('overwrite existing output file', FLAG),
         )
-def create(source, output, include, shebang, compress, force):
+def convert(source, output, include, shebang, compress, force):
    # verify source
     if not source.exists():
         abort('unable to find %r' % source)
@@ -232,11 +232,14 @@ def create(source, output, include, shebang, compress, force):
 
                 from zipfile import ZipFile
                 archive = ZipFile(bltn_open(zip, 'rb'))
+
+                try:
                 """))
         if mode == 'package':
-            new_main.append('from %s import __main__' % module_name)
+            new_main.append('    from %s import __main__' % module_name)
         elif source_dir.exists('cli.py'):
-            new_main.append('import cli')
+            new_main.append('    import cli')
+        new_main.append('finally:\n    archive.close()')
         with open(source_dir/'__main__.py', 'w') as m:
             m.write('\n'.join(new_main) + '\n')
     #
