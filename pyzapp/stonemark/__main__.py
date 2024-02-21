@@ -1,7 +1,7 @@
 from __future__ import print_function
 from scription import *
 from antipathy import Path
-from . import Document, write_file
+from . import Document, write_file, write_css
 
 
 @Command(
@@ -22,7 +22,9 @@ def stonemark(source, target, header_sizes, header_title, css, fragment):
     with open(source) as f:
         text = f.read()
     doc = Document(text, header_sizes=header_sizes, first_header_is_title=header_title)
-    write_file(target, doc, fragment, css)
+    write_file(target, doc, fragment=fragment, css=css)
+    if css == 'stonemark.css' and not Path.exists(css):
+        write_css(css)
 
 
 Run()

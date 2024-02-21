@@ -28,6 +28,8 @@ currently supported syntax:
 
     Code                    `code`
 
+    Preformatted Text       ``text``
+
     Horizontal Rule         --- or ***
 
     Link         (in-line)  [title](https://www.example.com)
@@ -69,10 +71,17 @@ currently supported syntax:
     Subscript               H~2~O
     Superscript             X^2^
 
-    Table                 | Syntax | Description |
-                          | ----------- | ----------- |
+    Table                 |[ table caption ]| .class-name-for-surrounding-div
+                          | Syntax | Description |
+                          | ---- |
                           | Header | Title |
                           | Paragraph | Text |
+                          | Merged Cell ||
+                          | and another | one |
+                          | merged cell \/ two |
+                          | ---- |
+                          | plus | footer |
+
 
 """
 
@@ -106,11 +115,11 @@ __all__ = [
         'Document',
         ]
 
-version = 0, 3, 2
+version = 0, 3, 5
 
 HEADING = PARAGRAPH = TEXT = QUOTE = O_LIST = U_LIST = LISTITEM = CODEBLOCK = RULE = IMAGE = FOOTNOTE = LINK = ID = DEFINITION = TABLE = DETAIL = None
 END = SAME = CHILD = CONCLUDE = ORDERED = UNORDERED = None
-PLAIN = BOLD = ITALIC = STRIKE = UNDERLINE = HIGHLIGHT = SUB = SUPER = CODE = FOOT_NOTE = ALL_TEXT = None
+PLAIN = BOLD = ITALIC = STRIKE = UNDERLINE = HIGHLIGHT = SUB = SUPER = CODE = PRE = FOOT_NOTE = ALL_TEXT = None
 TERMINATE = INCLUDE = RESET = WORD = NUMBER = WHITESPACE = PUNCTUATION = OTHER = None
 
 # classes
@@ -170,7 +179,7 @@ class CharType(DocEnum):
 
 @export(globals())
 class TextType(int, Flag):
-    _order_ = 'PLAIN ITALIC BOLD BOLD_ITALIC STRIKE UNDERLINE HIGHLIGHT SUB SUPER CODE FOOT_NOTE ALL_TEXT'
+    _order_ = 'PLAIN ITALIC BOLD BOLD_ITALIC STRIKE UNDERLINE HIGHLIGHT SUB SUPER CODE PRE FOOT_NOTE ALL_TEXT'
 
     def __new__(cls, value, docstring, open, close, whitespace, start, end):
         if value == -1:
@@ -215,6 +224,7 @@ class TextType(int, Flag):
     SUB             = 'subscripted: H~2~O', '~', '~', False, '<sub>', '</sub>'
     SUPER           = 'superscripted: x^2^', '^', '^', False, '<sup>', '</sup>'
     CODE            = '`if blah is None`', '`', '`', False, '<code>', '</code>'
+    PRE             = '``pre-formatted text``', '``', '``', True, '<pre>', '</pre>'
     FOOT_NOTE       = 'a statement [^1]', '[^', ']', True, '<sup>', '</sup>'
     ALL_TEXT        = -1, 'no restrictions', '', '', False, '', ''
 
@@ -820,20 +830,10 @@ class Text(Node):
     def to_html(self):
         start = ''
         end = ''
-        for mark, open, close in (
-                (BOLD, '<b>', '</b>'),
-                (ITALIC, '<i>', '</i>'),
-                (STRIKE, '<del>', '</del>'),
-                (UNDERLINE, '<u>', '</u>'),
-                (HIGHLIGHT, '<mark>', '</mark>'),
-                (SUB, '<sub>', '</sub>'),
-                (SUPER, '<sup>', '</sup>'),
-                (CODE, '<code>', '</code>'),
-                (FOOT_NOTE, '<sup>', '</sup>'),
-            ):
+        for mark in (BOLD, ITALIC, CODE, PRE, STRIKE, UNDERLINE, HIGHLIGHT, SUB, SUPER, FOOT_NOTE):
             if mark in self.style:
-                start = start + open
-                end = close + end
+                start = start + mark.start
+                end = mark.end + end
         if self.text is not None:
             body = escape(self.text)
         else:
@@ -1119,48 +1119,122 @@ class Table(Node):
     allowed_text = ALL_TEXT
     blank_line_required = True
     cell_count = 0
-    header_cells = []
-    body_cells = []
+    header_rows = []
+    body_rows = []
+    footer_rows = []
     rows = []
     dividers = 0
+    html_attrs = ''
+    caption = None
 
     def __init__(self, line, **kwds):
         super(Table, self).__init__(**kwds)
-        self.header_cells = []
-        self.body_cells = []
+        self.initial = True
+        self.header_rows = []
+        self.body_rows = []
         self.rows = []
-        cells = self.split_row(line)
-        self.cell_count = len(cells)
+        # check for caption
+        if line.startswith('|[') and ']|' in line:
+            # treat it as a caption
+            end = line.index(']|')
+            self.caption = line[2:end].strip()
+            attrs = line[end+2:].strip()
+            classes = []
+            html_id = None
+            for attr in attrs.split():
+                if attr[0] == '.':
+                    classes.append(attr[1:])
+                elif attr[0] == '#':
+                    html_id = attr[1:]
+                else:
+                    raise BadFormat('attribute %r not supported' % attr)
+            if classes:
+                self.html_attrs += ' class="%s"' % ' '.join(classes)
+            if html_id:
+                self.html_attrs += ' id="%s"' % html_id
+        else:
+            cells = self.split_row(line)
+            self.cell_count = len(cells)
 
     def check(self, line):
+        initial, self.initial = self.initial, False
+        if initial and self.caption is not None:
+            return SAME
         cells = self.split_row(line.rstrip())
-        if len(cells) != self.cell_count:
+        if self.cell_count == 0:
+            self.cell_count = len(cells)
+        if len(cells) != self.cell_count and set(cells[0].text) != set('-'):
             raise BadFormat('line %r does not have %d cells' % (line, self.cell_count))
         self.rows.append(cells)
         return SAME
+
+    def combine_cells(self, range, type):
+        final_rows = []
+        if range is not None:
+            for i, row in enumerate(self.rows[slice(*range)], start=range[0]):
+                new_row = []
+                final_rows.append(new_row)
+                last_cell = None
+                for j, cell in enumerate(row):
+                    if not cell.rowspan:
+                        if cell is not last_cell:
+                            cell.type = type
+                            new_row.append(cell)
+                            last_cell = cell
+                    else:
+                        if i == range[0]:
+                            raise BadFormat('no previous row to merge cell with [lines %r - %r' % (self.start_line, self.end_line))
+                        merge_cell = self.rows[i-1][j]
+                        row[j] = merge_cell
+                        merge_cell.text += ' ' + cell.text if cell.text else ''
+                        if merge_cell.rowspan:
+                            merge_cell.rowspan += 1
+                        else:
+                            merge_cell.rowspan = 2
+        return final_rows
 
     def finalize(self):
         """
         the entire table is in rows as lists of cells
         parse out the headers, etc.
         """
-        i = 0
-        if len(self.rows) > 1:
-            for cell in self.rows[1]:
-                if set(cell) != set('-'):
+        # header cells
+        # ------------
+        # body cells
+        # body cells
+        # ------------
+        # footer cells
+        header_range = body_range = footer_range = None
+        start = 0
+        for i, row in enumerate(self.rows):
+            if set(row[0].text) == set('-'):
+                if header_range is None:
+                    # if no header rows, leave header_range as None
+                    if i != start:
+                        header_range = start, i
+                    start = i + 1
+                elif body_range is None:
+                    body_range = start, i
+                    start = i + 1
+                    if len(self.rows) > start:
+                        footer_range = start, len(self.rows)
                     break
-            else:
-                # first row is header
-                self.header_cells = [
-                        format(cell, allowed_styles=self.allowed_text, parent=self)
-                        for cell in self.rows[0]
-                        ]
-                i = 2
-        for row in self.rows[i:]:
-            self.body_cells.append([
-                    format(cell, allowed_styles=self.allowed_text, parent=self)
-                    for cell in row
-                    ])
+                else:
+                    raise BadFormat("too many headers/footers in table [lines %r - %r]" % (self.start_line, self.end_line))
+        # check that body_range is defined, otherwise, define it
+        if body_range is None:
+            body_range = start, len(self.rows)
+        # merge and copy cells
+        self.header_rows = self.combine_cells(header_range, type='header')
+        self.body_rows = self.combine_cells(body_range, type='body')
+        self.footer_rows = self.combine_cells(footer_range, type='footer')
+        # and format text
+        for rows in (self.header_rows, self.body_rows, self.footer_rows):
+            for row in rows:
+                for cell in row:
+                    cell.text = format(cell.text, allowed_styles=self.allowed_text, parent=self)
+        if self.caption:
+            self.caption = format(self.caption, allowed_styles=self.allowed_text, parent=self)
         return super(Table, self).finalize()
 
     @classmethod
@@ -1170,36 +1244,73 @@ class Table(Node):
         return NO_MATCH
 
     def to_html(self):
-        result = ['<table>']
-        if self.header_cells:
-            result.append('    <thead>\n        <tr>')
-            for cell in self.header_cells:
-                result.append('            <th>%s</th>' % ''.join([c.to_html() for c in cell]))
-            result.append('        </tr>\n    </thead>')
-        result.append('    <tbody>')
-        for row in self.body_cells:
-            result.append('        <tr>')
-            for cell in row:
-                result.append('            <td>%s</td>' % ''.join([c.to_html() for c in cell]))
-            result.append('        </tr>')
-        result.append('    </tbody>\n</table>')
+        result = ['<div%s><table>' % self.html_attrs]
+        if self.caption:
+            result.append('    <caption>%s</caption>' % ''.join(t.to_html() for t in self.caption))
+        if self.header_rows:
+            result.append('    <thead>')
+            for row in self.header_rows:
+                result.append('        <tr>')
+                for cell in row:
+                    result.append('            %s' % cell.to_html())
+                # result.append('            <th>%s</th>' % ''.join([c.to_html() for c in cell]))
+                result.append('        </tr>')
+            result.append('    </thead>')
+        if self.body_rows:
+            result.append('    <tbody>')
+            for row in self.body_rows:
+                result.append('        <tr>')
+                for cell in row:
+                    result.append('            %s' % cell.to_html())
+                    # result.append('            <td>%s</td>' % ''.join([c.to_html() for c in cell]))
+                result.append('        </tr>')
+            result.append('    </tbody>')
+        if self.footer_rows:
+            result.append('    <tfoot>')
+            for row in self.footer_rows:
+                result.append('        <tr>')
+                for cell in row:
+                    result.append('            %s' % cell.to_html())
+                    # result.append('            <td>%s</td>' % ''.join([c.to_html() for c in cell]))
+                result.append('        </tr>')
+            result.append('    </tfoot>')
+        result.append('</table></div>')
         return '\n'.join(result)
 
     def split_row(self, line):
-        if line[0] != '|' or line[-1] != '|':
-            raise BadFormat('table lines must start and end with | [%r]' % line)
+        if line[0] != '|' or (line[-1] != '|' and line[-2:] != '\\/') or line[-1] == '\\':
+            raise BadFormat('table lines must start with | and end with | or \\/ [%r]' % line)
         cells = []
         cell = []
         i = 1
         while i < len(line):
             ch = line[i]
-            if ch == '\\':
-                cell.append(line[i+1])
+            vert = line[i:i+2] == '\\/'
+            if ch == '\\' and not vert:
+                cell.extend(line[i:i+2])
                 i += 2
                 continue
-            elif ch == '|':
-                cells.append(''.join(cell).strip())
-                cell = []
+            elif ch == '|' or vert:
+                # could be a single cell, or an extended cell
+                if not cell:
+                    # extended column
+                    if not cells:
+                        raise BadFormat('first cell does not exist [%r]' % (line, ))
+                    current_cell = cells[-1]
+                    cells.append(current_cell)
+                    if current_cell.colspan:
+                        current_cell.colspan += 1
+                    else:
+                        current_cell.colspan = 2
+                else:
+                    current_cell = Cell(''.join(cell).strip())
+                    cells.append(current_cell)
+                    cell = []
+                if vert:
+                    # extended row
+                    current_cell.rowspan = True
+                    i += 2
+                    continue
             else:
                 cell.append(ch)
             i += 1
@@ -1207,6 +1318,40 @@ class Table(Node):
         if cell:
             raise BadFormat('table lines must start and end with | [%r]' % line)
         return cells
+
+class Cell(object):
+
+    def __init__(self, text, type='body'):
+        self.text = text
+        self.colspan = None
+        self.rowspan = None
+        self.type = type
+
+    def __repr__(self):
+        colspan = '' if not self.colspan else ', colspan="%s"' % self.colspan
+        rowspan = '' if not self.rowspan else ', rowspan="%s"' % self.rowspan
+        return "Cell(%r%s%s)" % (self.text, colspan, rowspan)
+
+    def to_html(self):
+        if self.type == 'header':
+            open_tag = '<th'
+            close_tag = '</th>'
+        else:
+            open_tag = '<td'
+            close_tag = '</td>'
+        classes = []
+        if self.rowspan:
+            open_tag += ' rowspan="%s"' % self.rowspan
+            classes.append('merged_rows')
+        if self.colspan:
+            open_tag += ' colspan="%s"' % self.colspan
+            classes.append('merged_cols')
+        if classes:
+            open_tag += ' class="%s"' % ' '.join(classes)
+        open_tag += '>'
+        content = ''.join(t.to_html() for t in self.text)
+        return "%s%s%s" % (open_tag, content, close_tag)
+
 
 class ID(Node):
     type = ID
@@ -1375,6 +1520,34 @@ def format(texts, allowed_styles, parent, _recurse=False):
                 del chars[pos]
                 pos += 1
             continue
+        if ch.char == "`":
+            # code or pre
+            if ''.join(c.char for c in chars[pos:pos+2]) == '``':
+                # pre
+                end = find("``", "``", start+2, False)
+                if end == -1:
+                    # oops
+                    raise BadFormat( 'failed to find matching "``" starting near %r between %r and %r' % (chars[pos-10:pos+10], parent.start_line, parent.end_line))
+                chars[start:end+2] = [Text(
+                        ''.join([c.char for c in chars[start+2:end]]),
+                        style=PRE,
+                        parent=parent,
+                        )]
+                pos += 2
+                continue
+            else:
+                # code
+                end = find("`", "`", start+1, False)
+                if end == -1:
+                    # oops
+                    raise BadFormat( 'failed to find matching "`" starting near %r between %r and %r' % (chars[pos-10:pos+10], parent.start_line, parent.end_line))
+                chars[start:end+1] = [Text(
+                        ''.join([c.char for c in chars[start+1:end]]),
+                        style=CODE,
+                        parent=parent,
+                        )]
+                pos += 1
+                continue
         if ch.char == "`":
             # code
             end = find("`", "`", start+1, False)
@@ -1716,120 +1889,128 @@ default_css = u'''\
  */
 
 table {
+    border: 1px solid #dfdfff;
     border-collapse: collapse;
     margin: 10px 0;
     box-shadow: 0 0 20px rgba(0, 0, 0, 0.15);
-}
+    }
+
+table .merged_cols {
+    text-align: center;
+    }
+
+table .merged_rows {
+    vertical-align: middle;
+    }
 
 table th {
-  text-align: left;
-  min-width: 150px;
-  background-color: #f3f3f3;
-  border-bottom: thin black solid;
-}
-
-table th:first-child {
-  text-align: left;
-}
+    text-align: left;
+    min-width: 150px;
+    background-color: #f9f9f9;
+    }
 
 table td {
-  padding: 7px 25px 7px 0px;
-  margin: 5px;
-  text-align: left;
-}
-
-tbody tr:nth-of-type(even) {
+    border-top: 1px solid #dfdfff;
+    border-right: 1px solid #dfdfff;
+    padding: 7px 25px 7px 5px;
+    margin: 5px;
+    text-align: left;
     background-color: #f3f3f3;
-}
+    }
 
-tbody tr.active-row {
+table tbody tr:first-child td {
+    border-top: thin black solid;
+    }
+
+tfoot tr:first-child td {
+    border-top: 1px solid black;
+    }
+
+tfoot tr td {
+    border: none;
+    background-color: #f9f9f9;
     font-weight: bold;
-    color: #009879;
-}
-
-select {
-  max-width: 225px;
-}
+    }
 
 blockquote {
-  background: #f9f9f9;
-  border-left: 10px solid #ccc;
-  margin: 1.5em 10px;
-  padding: 0.5em 10px;
-  quotes: "\201C""\201D""\2018""\2019";
-}
+    background: #f9f9f9;
+    border-left: 10px solid #ccc;
+    margin: 1.5em 10px;
+    padding: 0.5em 10px;
+    quotes: "\201C""\201D""\2018""\2019";
+    }
 
 blockquote:before {
-  color: #ccc;
-  content: open-quote;
-  font-size: 4em;
-  line-height: 0.1em;
-  margin-right: 0.25em;
-  vertical-align: -0.4em;
-}
+    color: #ccc;
+    content: open-quote;
+    font-size: 4em; 
+    line-height: 0.1em;
+    margin-right: 0.25em;
+    vertical-align: -0.4em;
+    }
 
 blockquote p {
-  display: inline;
-}
+    display: inline;
+    }
 
 /* For all <code> */
 code {
-  font-family: monospace;
-  font-size: inherit;
-  background: #efefff;
-}
+    font-family: monospace;
+    font-size: inherit;
+    background: #dfdfff;
+    }
 
 /* Code in text */
 p > code,
 li > code,
 dd > code,
 td > code {
-  word-wrap: break-word;
-  box-decoration-break: clone;
-  padding: .1rem .3rem .2rem;
-  border-radius: .75rem;
-}
+    word-wrap: break-word;
+    box-decoration-break: clone;
+    padding: .1rem .3rem .2rem;
+    border-radius: .75rem;
+    }
 
 h1 > code,
 h2 > code,
 h3 > code,
 h4 > code,
 h5 > code {
-  padding: .0rem .2rem;
-  border-radius: .5rem;
-  background: inherit;
-  border: thin black solid;
-}
+    padding: .0rem .2rem;
+    border-radius: .5rem;
+    background: inherit;
+    border: thin black solid;
+    }
 
 pre code {
-  display: block;
-  white-space: pre;
-  -webkit-overflow-scrolling: touch;
-  overflow-x: scroll;
-  max-width: 100%;
-  min-width: 100px;
-  padding: 10px;
-  border: thin black solid;
-  border-radius: .2rem;
-}
+    display: block;
+    white-space: pre;
+    -webkit-overflow-scrolling: touch;
+    overflow-x: scroll;
+    max-width: 100%;
+    min-width: 100px;
+    padding: 10px;
+    border: thin black solid;
+    border-radius: .2rem;
+    }
 
 sup {
-  padding: 0px 3px;
-  }
+    padding: 0px 3px;
+    }
 
 .footnote {
-  padding: 5px 0px;
-  }
+    padding: 5px 0px;
+    }
 
 *
 ol,
 ul {
     padding: 0px 15px;
-}
+    }
 
 li {
-  padding: 2px;
-}
+    padding: 2px;
+    }
 
 h1 {
     display: block;
@@ -1839,7 +2020,7 @@ h1 {
     margin-left: 0;
     margin-right: 0;
     font-weight: bold
-}
+    }
 
 h2 {
     display: block;
@@ -1849,7 +2030,7 @@ h2 {
     margin-left: 0;
     margin-right: 0;
     font-weight: bold;
-}
+    }
 
 h3 {
     display: block;
@@ -1859,7 +2040,7 @@ h3 {
     margin-left: 0;
     margin-right: 0;
     font-weight: bold;
-}
+    }
 
 h4 {
     display: block;
@@ -1870,7 +2051,7 @@ h4 {
     margin-right: 0;
     font-weight: bold;
     font-style: italic;
-}
+    }
 
 '''
 
