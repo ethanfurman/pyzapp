@@ -6,7 +6,13 @@ Create python executable zip files.
 
 from __future__ import print_function
 
-import aenum, antipathy, dbf, pandaemonium, stonemark, scription, xaml
+import aenum
+import antipathy
+import dbf
+import pandaemonium
+import stonemark
+import scription
+import xaml
 
 from scription import *
 from antipathy import Path
@@ -83,8 +89,11 @@ def convert(source, output, include, shebang, compress, force):
     # - converting a single-script app into a pyzapp
     # - converting a directory bundle consisting of a __main__.py and maybe a test.py into a pyzapp
     # - converting a python package with a __main__.py, __init__.py, etc., into a pyzapp
-    # create __main__ if missing
-    if source.exists('__main__.py') and source.exists('__init__.py'):
+    # create __main__ if missing (or dance around if making ourself)
+    if source.endswith('/pyzapp'):
+        mode = 'subdir'
+        print('mode = self-compilation')
+    elif source.exists('__main__.py') and source.exists('__init__.py'):
         # option 3
         mode = 'package'
         print('mode =', mode)
@@ -112,19 +121,20 @@ def convert(source, output, include, shebang, compress, force):
     elif mode == 'subdir':
         source_dir.rmdir()
         source.copytree(source_dir)
+        if source.endswith('/pyzapp'):
+            source.unlink('__init__.py')
+            (source_dir/'__main__.py').rename(source_dir/'cli.py')
     else:
         source.copy(source_dir/'cli.py')
-    print('working dir: %r' % source_dir)
+    print('working dir: %r\n   %s' % (source_dir, '\n   '.join(source_dir.listdir())))
     #
     # create __main__ if needed
     if not source_dir.exists('__main__.py'):
-        # included = source_dir.glob()
         new_main = []
         if shebang:
             new_main.append('#!%s' % shebang)
             new_main.append('')
         new_main.append('import sys')
-        new_main.append('print(sys.modules)')
         new_main.append('')
         new_main.append('# protect against different versions of modules being imported')
         new_main.append("# by Python's startup procedures")
@@ -133,11 +143,11 @@ def convert(source, output, include, shebang, compress, force):
         to_import = set()
         # include files in source
         for dirpath, dirnames, filenames in source_dir.walk():
-            print('\n  '.join([dirpath]+filenames), verbose=2)
+            # print('\n  '.join([dirpath]+filenames), verbose=2)
             if dirpath != source_dir:
                 if '__init__.py' in filenames:
                     # it's a package
-                    print('--- %r' % (dirpath-source_dir), verbose=2)
+                    # print('--- %r' % (dirpath-source_dir), verbose=2)
                     sub_imp = (dirpath-source_dir).lstrip('/').replace('/', '.')
                     to_import.add(sub_imp)
                     print('adding subimport %r' % sub_imp)
@@ -167,10 +177,6 @@ def convert(source, output, include, shebang, compress, force):
                 print('  importing', inc_module_name, verbose=2)
                 module_path = Path(find_module(inc_module_name))
             module_file = module_path.stem
-            # if module_file != '__init__':
-            #     # single file
-            #     new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % module_file)
-            # else:
             if module_file == '__init__':
                 # package -- add any submodules
                 module_dir = module_path.dirname
@@ -187,14 +193,6 @@ def convert(source, output, include, shebang, compress, force):
                         to_import.add(sub_imp)
                         print('adding included subimport %r' % sub_imp)
                         new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
-        # import included packages
-        new_main.append('')
-        for mod in sorted(to_import):
-            new_main.append('try:')
-            new_main.append('    import %s' % mod)
-            new_main.append('except Exception:')
-            new_main.append('    pass')
-        #
         new_main.append('')
         #
         # handle accessing non-py files inside zip archive (rudimentary)
@@ -326,6 +324,7 @@ def init(name, _modules=None):
     """
     Create directory structure for new script NAME.
     """
+    self = name == 'pyzapp'
     if not _modules:
         print('initializing %s' % name)
         if name.exists():
@@ -341,6 +340,7 @@ def init(name, _modules=None):
             ('pandaemonium', ('LICENSE', '__init__.py')),
             ('scription', ('LICENSE', '__init__.py')),
             ('stonemark', ('LICENSE', '__init__.py', '__main__.py')),
+            ('xaml', ('LICENSE', '__init__.py', '__main__.py')),
             ):
         if _modules and folder not in _modules:
             print('skipping %s' % folder)
@@ -351,8 +351,13 @@ def init(name, _modules=None):
             name.mkdir(folder)
         for filename in files:
             print('   %s/%s' % (folder, filename), end=' . . . ')
-            with open('PYZAPP/pyzapp'/folder/filename, 'rb') as fh:
-                data = fh.read()
+            if not self:
+                with open('PYZAPP/pyzapp'/folder/filename, 'rb') as fh:
+                    data = fh.read()
+            else:
+                source = find_module(folder)
+                with open(source, 'rb') as fh:
+                    data = fh.read()
             with open(name/folder/filename, 'wb') as fh:
                 fh.write(data)
             print('copied')
