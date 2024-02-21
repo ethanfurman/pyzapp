@@ -6,13 +6,14 @@ Create python executable zip files.
 
 from __future__ import print_function
 
+import aenum, antipathy, dbf, pandaemonium, stonemark, scription, xaml
+
 from scription import *
 from antipathy import Path
 from tempfile import mkdtemp
 from textwrap import dedent
 from zipfile import ZipFile, ZIP_DEFLATED, ZIP_STORED
 
-import aenum, antipathy, dbf, pandaemonium, stonemark, scription, xaml
 import sys as _sys
 
 aenum, antipathy, dbf, pandaemonium, stonemark, scription, xaml
@@ -72,7 +73,6 @@ def convert(source, output, include, shebang, compress, force):
         elif not force:
             abort('output file %r already exists (use --force to overwrite' % output)
         else:
-            output.chmod(0o700)
             output.unlink()
     print('output: %r' % output)
     # verify compression
@@ -124,17 +124,22 @@ def convert(source, output, include, shebang, compress, force):
             new_main.append('#!%s' % shebang)
             new_main.append('')
         new_main.append('import sys')
+        new_main.append('print(sys.modules)')
         new_main.append('')
         new_main.append('# protect against different versions of modules being imported')
         new_main.append("# by Python's startup procedures")
         new_main.append('saved_modules = []')
 
+        to_import = set()
         # include files in source
         for dirpath, dirnames, filenames in source_dir.walk():
+            print('\n  '.join([dirpath]+filenames), verbose=2)
             if dirpath != source_dir:
                 if '__init__.py' in filenames:
                     # it's a package
-                    sub_imp = (dirpath-source_dir).lstrip('/').replace('/', '.').strip_ext()
+                    print('--- %r' % (dirpath-source_dir), verbose=2)
+                    sub_imp = (dirpath-source_dir).lstrip('/').replace('/', '.')
+                    to_import.add(sub_imp)
                     print('adding subimport %r' % sub_imp)
                     new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
                 else:
@@ -148,11 +153,13 @@ def convert(source, output, include, shebang, compress, force):
                 if f in ('__init__.py','__main__.py') or not f.endswith('.py'):
                     continue
                 sub_imp = (dirpath/f-source_dir).lstrip('/').replace('/', '.').strip_ext()
+                to_import.add(sub_imp)
                 print('adding subimport %r' % sub_imp)
                 new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
         #
         # include files from command line
         for inc_module_name in include:
+            to_import.add(inc_module_name)
             new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % inc_module_name)
             if inc_module_name in _sys.modules:
                 module_path = Path(_sys.modules[inc_module_name].__file__)
@@ -160,11 +167,12 @@ def convert(source, output, include, shebang, compress, force):
                 print('  importing', inc_module_name, verbose=2)
                 module_path = Path(find_module(inc_module_name))
             module_file = module_path.stem
-            if module_file != '__init__':
-                # single file
-                new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % module_file)
-            else:
-                # package
+            # if module_file != '__init__':
+            #     # single file
+            #     new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % module_file)
+            # else:
+            if module_file == '__init__':
+                # package -- add any submodules
                 module_dir = module_path.dirname
                 base_dir = module_dir.dirname
                 for dirpath, dirnames, filenames in module_dir.walk():
@@ -176,8 +184,16 @@ def convert(source, output, include, shebang, compress, force):
                         if f in ('__init__.py','__main__.py') or not f.endswith('.py'):
                             continue
                         sub_imp = (dirpath/f-base_dir).lstrip('/').replace('/', '.').strip_ext()
+                        to_import.add(sub_imp)
                         print('adding included subimport %r' % sub_imp)
                         new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
+        # import included packages
+        new_main.append('')
+        for mod in sorted(to_import):
+            new_main.append('try:')
+            new_main.append('    import %s' % mod)
+            new_main.append('except Exception:')
+            new_main.append('    pass')
         #
         new_main.append('')
         #
@@ -316,12 +332,15 @@ def init(name, _modules=None):
             abort("%s already exists" % name)
         name.makedirs()
     for folder, files in (
-            ('aenum', (('LICENSE', 'README', '__init__.py', '_py2.py', '_py3.py'))),
-            ('antipathy', (('LICENSE', 'README', '__init__.py', 'path.py'))),
-            ('dbf', (('LICENSE', '__init__.py'))),
-            ('pandaemonium', (('LICENSE', '__init__.py'))),
-            ('scription', (('LICENSE', '__init__.py'))),
-            ('stonemark', (('LICENSE', '__init__.py', '__main__.py'))),
+            ('aenum', ('LICENSE', 'README', '__init__.py', '_py2.py', '_py3.py',
+                       '_common.py', '_constant.py', '_enum.py', '_tuple.py',
+                       'test.py', 'test_v3.py', 'test_v37.py',
+                       )),
+            ('antipathy', ('LICENSE', 'README', '__init__.py', 'path.py')),
+            ('dbf', ('LICENSE', '__init__.py')),
+            ('pandaemonium', ('LICENSE', '__init__.py')),
+            ('scription', ('LICENSE', '__init__.py')),
+            ('stonemark', ('LICENSE', '__init__.py', '__main__.py')),
             ):
         if _modules and folder not in _modules:
             print('skipping %s' % folder)
