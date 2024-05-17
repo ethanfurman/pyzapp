@@ -348,16 +348,19 @@ def init(app, _modules=None):
                 # non-standard module
                 folder = Path(m)
                 files = []
-                if app.exists(m):
+                if app.exists(m+'.py'):
+                    files.append(m+'.py')
+                elif app.exists(m):
                     # package already exists in source, so collect names to update
                     files = [
-                            m/f
+                            f
                             for f in app.listdir(m)
                             if not f.endswith(('.swp','.pyc','.bak','.old'))
                             ]
                 # elif app.exists('%s.py' % m):
                 #     m += '.py'
                 external_modules[m] = files
+    echo(external_modules)
     for m, files in internal_modules.items() + external_modules.items():
         if _modules and m not in _modules:
             print('skipping %s' % m)
@@ -382,8 +385,12 @@ def init(app, _modules=None):
                     data = fh.read()
             else:
                 # mtype, source = find_module_file(m)
-                print('grabbing version at', base_dir/filename, end=' . . . ')
-                with open(base_dir/filename, 'rb') as fh:
+                if mtype is MODULE:
+                    src = base_dir/filename
+                else:
+                    src = base_dir/m/filename
+                print('grabbing version at', src, end=' . . . ')
+                with open(src, 'rb') as fh:
                     data = fh.read()
             if mtype is MODULE:
                 dest = app/filename
