@@ -33,7 +33,7 @@ intelligently parses command lines
 from __future__ import print_function
 
 # version
-version = 0, 86, 24
+version = 0, 86, 26
 
 # imports
 import sys
@@ -534,26 +534,35 @@ def _func_globals(func):
         return func.__globals__
 
 def _get_version(from_module, _try_other=True):
+    scription_debug('getting version')
+    version = ''
     for ver in _version_strings:
+        scription_debug('  checking %r' % ver, verbose=2)
         if from_module.get(ver):
             version = from_module.get(ver)
             if not isinstance(version, basestring):
                 version = '.'.join([str(x) for x in version])
+            scription_debug('  found', version)
             break
     else:
         # try to find package name
         try:
+            scription_debug('  looking for package name')
             package = os.path.split(os.path.split(sys.modules['__main__'].__file__)[0])[1]
+            scription_debug('  found', package)
         except IndexError:
             version = 'unknown'
+            scription_debug('  unknown')
         else:
             if package in sys.modules and any(hasattr(sys.modules[package], v) for v in _version_strings):
                 for ver in _version_strings:
+                    scription_debug('  checking %r' % ver, verbose=2)
                     version = getattr(sys.modules[package], ver, '')
                     if version:
                         break
                 if not isinstance(version, basestring):
                     version = '.'.join([str(x) for x in version])
+                scription_debug('  found', version)
             elif _try_other:
                 version = ' / '.join(_get_all_versions(from_module, _try_other=False))
             if not version.strip():
@@ -561,19 +570,21 @@ def _get_version(from_module, _try_other=True):
     return version
 
 def _get_all_versions(from_module, _try_other=True):
-    scription_debug('getting all versions', verbose=2)
+    scription_debug('getting all versions', verbose=1)
     versions = ['%s=%s' % (from_module['module']['script_name'], _get_version(from_module, _try_other=False))]
-    for name, obj in from_module.items():
+    for name, obj in from_module:
+        scription_debug('checking', name, verbose=3)
         if name.startswith('_') or not isinstance(obj, ModuleType):
+            scription_debug(' skipping', verbose=3)
             continue
-        scription_debug('checking', name, verbose=2)
         for ver in _version_strings:
-            scription_debug('  looking for', ver, verbose=3)
+            scription_debug('  checking %r' % ver, verbose=3)
             if hasattr(obj, ver):
                 version = getattr(obj, ver)
                 if not isinstance(version, basestring):
                     version = '.'.join(['%s' % x for x in version])
                 versions.append('%s=%s' % (name, version))
+                scription_debug('  found', name, version)
                 break
         else:
             versions.append('%s=unknown' % (name, ))
@@ -1258,7 +1269,7 @@ def _usage(func, param_line_args):
         _print(_get_version(script_module['module']))
         sys.exit(Exit.Success)
     elif print_all_versions:
-        _print('\n'.join(_get_all_versions(script_module)))
+        _print('\n'.join(_get_all_versions(script_module['module'])))
         sys.exit(Exit.Success)
     for setting in set(func.__scription__.values()):
         if setting.kind == 'required':
@@ -1528,7 +1539,7 @@ class Spec(object):
                 nargs = '+'
             arg_type_default = tuple()
         elif default is not empty:
-            arg_type_default = type_of(default)
+            arg_type_default = type(default)
         if abbrev not in(empty, None) and not isinstance(abbrev, tuple):
             abbrev = (abbrev, )
         if usage is not empty:
@@ -1653,7 +1664,7 @@ def Run():
                 _print(_get_version(script_module['module']))
                 sys.exit(Exit.Success)
             elif func_name in ('--all-versions', '--all_versions'):
-                _print('\n'.join(_get_all_versions(script_module)))
+                _print('\n'.join(_get_all_versions(script_module['module'])))
                 sys.exit(Exit.Success)
             else:
                 func_name = func_name.replace('_', '-')
@@ -3272,12 +3283,23 @@ def info(*args, **kwds):
         kwds.setdefault('verbose', 1)
         print(*args, **kwds)
 
-def split_text(text, max):
-    # return a list of strings where each string is <= max, and words are whole
+def wrap_line(text, max, indent=0, primary=0, secondary=0):
+    # return a list of strings where each string is <= max, and words are whole;
     # newlines are honorod
+    if indent < 0:
+        raise ValueError('`indent` must be zero or positive')
+    if secondary < 0:
+        raise ValueError('`secondary` must be zero or positive')
+    if primary < 0:
+        secondary += -primary
+        primary = 0
+    if indent:
+        secondary += indent
     lines = []
     text = text.split('\n')
     for line in text:
+        if indent or primary:
+            line = ' '*(indent+primary) + line
         while line:
             if len(line) <= max:
                 lines.append(line.rstrip())
@@ -3292,7 +3314,10 @@ def split_text(text, max):
                 # no whitespace, just take a chunk
                 lines.append(line[:max].rstrip())
                 line = line[max:]
+            if secondary and line.strip():
+                line = ' '*secondary + line
     return lines
+split_text = wrap_line
 
 def box(message, *style, **kwds):
     """ draws box around text using style -> ([border,] [char [, char [ ...]]])
@@ -3454,7 +3479,7 @@ def table_display(rows, widths=None, types=None, header=True, display_none=None,
             if len(row) == 1:
                 # make a line using the row character
                 row = row * single_cell_width
-            for line in split_text(row, single_cell_width):
+            for line in wrap_line(row, single_cell_width):
                 yield(sides % ('%-*s' % (single_cell_width, line)))
         else:
             for row in zip_values(row, widths, types):
@@ -3655,7 +3680,7 @@ def zip_values(row, widths, types):
     expanded_row = []
     for i, cell in enumerate(row):
         if isinstance(cell, basestring):
-            expanded_row.append(tuple(split_text(cell, widths[i])))
+            expanded_row.append(tuple(wrap_line(cell, widths[i])))
         else:
             expanded_row.append((cell, ))
     for row in zip_longest(*expanded_row, fillvalue=empty):
