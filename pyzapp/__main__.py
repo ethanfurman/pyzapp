@@ -2,8 +2,6 @@
 """
 Create python executable zip files.
 """
-# imports
-
 from __future__ import print_function
 
 import aenum
@@ -30,9 +28,23 @@ except NameError:
     class ModuleNotFoundError(ImportError):
         pass
 
-version = 0, 4, 0
+version = 0, 5, 0
 
-# API
+internal_modules = {
+        'aenum': ('LICENSE', 'README', '__init__.py', '_py2.py', '_py3.py',
+                   '_common.py', '_constant.py', '_enum.py', '_tuple.py',
+                   'test.py', 'test_v3.py', 'test_v37.py',
+                   ),
+        'antipathy': ('LICENSE', 'README', '__init__.py', 'path.py'),
+        'dbf': ('LICENSE', '__init__.py'),
+        'pandaemonium': ('LICENSE', '__init__.py'),
+        'scription': ('LICENSE', '__init__.py'),
+        'stonemark': ('LICENSE', '__init__.py', '__main__.py'),
+        'xaml': ('LICENSE', '__init__.py', '__main__.py'),
+        }
+
+## API
+
 @Alias('create')
 @Command(
         source=Spec('script file or application directory', type=Path),
@@ -148,7 +160,7 @@ def convert(source, output, include, shebang, compress, force):
                 if '__init__.py' in filenames:
                     # it's a package
                     # print('--- %r' % (dirpath-source_dir), verbose=2)
-                    sub_imp = (dirpath-source_dir).lstrip('/').replace('/', '.')
+                    sub_imp = (dirpath-source_dir).replace('/', '.')
                     to_import.add(sub_imp)
                     print('adding subimport %r' % sub_imp)
                     new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
@@ -162,7 +174,7 @@ def convert(source, output, include, shebang, compress, force):
             for f in filenames:
                 if f in ('__init__.py','__main__.py') or not f.endswith('.py'):
                     continue
-                sub_imp = (dirpath/f-source_dir).lstrip('/').replace('/', '.').strip_ext()
+                sub_imp = (dirpath/f-source_dir).replace('/', '.').strip_ext()
                 to_import.add(sub_imp)
                 print('adding subimport %r' % sub_imp)
                 new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
@@ -174,14 +186,12 @@ def convert(source, output, include, shebang, compress, force):
             if inc_module_name in _sys.modules:
                 module_path = Path(_sys.modules[inc_module_name].__file__)
             else:
-                print('  importing', inc_module_name, verbose=2)
-                module_path = Path(find_module(inc_module_name))
-            module_file = module_path.stem
-            if module_file == '__init__':
-                # package -- add any submodules
-                module_dir = module_path.dirname
-                base_dir = module_dir.dirname
-                for dirpath, dirnames, filenames in module_dir.walk():
+                print('  searching', inc_module_name, verbose=2)
+                module_type, module_path = Path(find_module_file(inc_module_name))
+            if module_type is PACKAGE:
+                # add any submodules
+                base_dir = module_path.dirname
+                for dirpath, dirnames, filenames in module_path.walk():
                     if '.git' in dirnames:
                         dirnames.pop(dirnames.index('.git'))
                     if '__pycache__' in dirnames:
@@ -189,7 +199,7 @@ def convert(source, output, include, shebang, compress, force):
                     for f in filenames:
                         if f in ('__init__.py','__main__.py') or not f.endswith('.py'):
                             continue
-                        sub_imp = (dirpath/f-base_dir).lstrip('/').replace('/', '.').strip_ext()
+                        sub_imp = (dirpath/f-base_dir).replace('/', '.').strip_ext()
                         to_import.add(sub_imp)
                         print('adding included subimport %r' % sub_imp)
                         new_main.append('saved_modules.append(sys.modules.pop("%s", None))' % sub_imp)
@@ -286,20 +296,21 @@ def convert(source, output, include, shebang, compress, force):
             for inc_module_name in include:
                 print('including %r' % inc_module_name)
                 if inc_module_name in _sys.modules:
-                    module_path = Path(_sys.modules[inc_module_name].__file__)
+                    module_file = Path(_sys.modules[inc_module_name].__file__)
+                    module_path = module_file.dirname
+                    module_type = PACKAGE if module_file.stem == '__init__'else MODULE
+                    module_file = module_file.stem
                 else:
-                    module_path = Path(find_module(inc_module_name))
-                module_file = module_path.stem
-                module_dir = module_path.dirname
-                if module_file != '__init__':
-                    # single file, not a package
+                    module_type, module_path = Path(find_module_file(inc_module_name))
+                    module_file = inc_module_name if module_type is MODULE else '__init__'
+                if module_type is MODULE:
                     arcname = module_file + '.py'
-                    f = module_dir/module_file + '.py'
+                    f = module_path/module_file + '.py'
                     print('  adding %r as %r' % (f, arcname), verbose=3)
                     zf.write(f, arcname=arcname)
                     continue
-                print('using %s from %r' % (inc_module_name, module_dir))
-                for dirpath, dirnames, filenames in module_dir.walk():
+                print('using %s from %r' % (inc_module_name, module_path))
+                for dirpath, dirnames, filenames in module_path.walk():
                     if '.git' in dirnames:
                         dirnames.pop(dirnames.index('.git'))
                     if '__pycache__' in dirnames:
@@ -309,8 +320,8 @@ def convert(source, output, include, shebang, compress, force):
                         print('   ', f, verbose=3)
                         if f.endswith(('.swp','.pyc','.bak','.old')):
                             continue
-                        arcname = (dirpath/f).relpath(module_dir.dirname)
-                        f = (dirpath/f)
+                        f = dirpath/f
+                        arcname = f - module_path
                         print('    adding %r as %r' % (f, arcname, ), verbose=3)
                         zf.write(f, arcname=arcname)
     output.chmod(0o555)
@@ -318,54 +329,70 @@ def convert(source, output, include, shebang, compress, force):
 
 
 @Command(
-        name=Spec('name of folder for new script', type=Path)
+        app=Spec('name of folder for new script', type=Path)
         )
-def init(name, _modules=None):
+def init(app, _modules=None):
     """
     Create directory structure for new script NAME.
     """
-    self = name == 'pyzapp'
+    self = app == 'pyzapp'
+    external_modules = {}
     if not _modules:
-        print('initializing %s' % name)
-        if name.exists():
-            abort("%s already exists" % name)
-        name.makedirs()
-    for folder, files in (
-            ('aenum', ('LICENSE', 'README', '__init__.py', '_py2.py', '_py3.py',
-                       '_common.py', '_constant.py', '_enum.py', '_tuple.py',
-                       'test.py', 'test_v3.py', 'test_v37.py',
-                       )),
-            ('antipathy', ('LICENSE', 'README', '__init__.py', 'path.py')),
-            ('dbf', ('LICENSE', '__init__.py')),
-            ('pandaemonium', ('LICENSE', '__init__.py')),
-            ('scription', ('LICENSE', '__init__.py')),
-            ('stonemark', ('LICENSE', '__init__.py', '__main__.py')),
-            ('xaml', ('LICENSE', '__init__.py', '__main__.py')),
-            ):
-        if _modules and folder not in _modules:
-            print('skipping %s' % folder)
+        print('initializing %s' % app)
+        if app.exists():
+            abort("%s already exists" % app)
+        app.makedirs()
+    else:
+        for m in _modules:
+            if m not in internal_modules:
+                # non-standard module
+                folder = Path(m)
+                files = []
+                if app.exists(m):
+                    # package already exists in source, so collect names to update
+                    files = [
+                            m/f
+                            for f in app.listdir(m)
+                            if not f.endswith(('.swp','.pyc','.bak','.old'))
+                            ]
+                # elif app.exists('%s.py' % m):
+                #     m += '.py'
+                external_modules[m] = files
+    for m, files in internal_modules.items() + external_modules.items():
+        if _modules and m not in _modules:
+            print('skipping %s' % m)
             continue
-        print('processing %s' % folder)
-        folder = Path(folder)
+        print('processing %s' % m)
+        external = m in external_modules
+        internal = not external
+        m = Path(m)
         if not _modules:
-            name.mkdir(folder)
+            # initial creation, m must be a folder
+            app.mkdir(m)
+        mtype = PACKAGE
+        if external:
+            # non-standard module/package, look for original files
+            mtype, base_dir, src_files = find_module_files(m)
+            files = files or src_files                                              # use src_files if now module/package
         for filename in files:
-            print('   %s/%s' % (folder, filename), end=' . . . ')
-            if not self:
-                with open('PYZAPP/pyzapp'/folder/filename, 'rb') as fh:
+            print('   %s' % filename, end=' . . . ')
+            if internal and not self:
+                print('using stored version')
+                with open('PYZAPP'/m/filename, 'rb') as fh:
                     data = fh.read()
             else:
-                source = find_module(folder)
-                with open(source, 'rb') as fh:
+                # mtype, source = find_module_file(m)
+                print('grabbing version at', base_dir/filename, end=' . . . ')
+                with open(base_dir/filename, 'rb') as fh:
                     data = fh.read()
-            with open(name/folder/filename, 'wb') as fh:
+            with open(app/filename, 'wb') as fh:
                 fh.write(data)
-            print('copied')
+            print('   copied')
     print('done')
 
 @Command(
         app=Spec('pyzapp path/app to update', type=Path),
-        modules=Spec('which modules to update',),
+        modules=Spec('which modules to update', MULTI),
         )
 def update(app, *modules):
     """
@@ -379,20 +406,59 @@ def update(app, *modules):
             break
     init(app, modules)
 
+@Command(
+        name=Spec('module name', ),
+        )
+def test(name):
+    mtype, base_dir, files = find_module_files(name)
+    echo(mtype)
+    echo(base_dir)
+    echo('\n'.join(f for f in files))
 
-# helpers
+## helpers
 
-def find_module(name):
+MODULE, PACKAGE = aenum.Enum('FileType', 'MODULE PACKAGE')
+
+def find_module_file(name):
+    """
+    Return the package's __init__ file, or the single file if not a package.
+    """
     init = Path('__init__.py')
     for p in _sys.path:
         path = Path(p)
         if path.exists(name/init):
-            return path/name/init
+            return PACKAGE, path/name
         elif path.exists(name+'.py'):
-            return path/name
+            return MODULE, path/name+'.py'
     else:
         raise ModuleNotFoundError(name)
 
-# do it
+def find_module_files(name):
+    """
+    Return a list of all files for module/package `name`.
+    """
+    files = []
+    module_type, path = find_module_file(name)
+    if module_type is MODULE:
+        base_dir = path.dirname
+        return module_type, path.dirname, [path.filename]
+    else:
+        package_file = path.stem
+        package_dir = path
+        base_dir = path.dirname
+        for dirpath, dirnames, filenames in package_dir.walk():
+            if '.git' in dirnames:
+                dirnames.remove('.git')
+            if '__pycache__' in dirnames:
+                dirnames.remove('__pycache__')
+            print('12 ', dirpath, verbose=3)
+            for f in filenames:
+                print('13   ', f, verbose=3)
+                if f.endswith(('.swp','.pyc','.bak','.old')) or f[0:1] in '~.':
+                    continue
+                files.append(dirpath/f-base_dir)
+        return module_type, base_dir, files
+
+## do it
 
 Run()
