@@ -2,13 +2,15 @@
 
 create:
 	# removing existing pyzapp.pyz
-	rm pyzapp.pyz
+	# rm pyzapp.pyz
 	# creating new version
-	python2.7 -m pyzapp create pyzapp
+	python2.7 -m pyzapp create pyzapp -f
 
 install:
 	# local
 	sudo cp pyzapp.pyz /usr/local/bin/pyzapp
+
+install-remote:
 	# fal-oe
 	scp pyzapp.pyz root@fal-oe:/usr/local/bin/pyzapp
 	# fal-odoo
