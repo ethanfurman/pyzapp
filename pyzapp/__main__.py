@@ -373,7 +373,7 @@ def init(app, _modules=None):
         if external:
             # non-standard module/package, look for original files
             mtype, base_dir, src_files = find_module_files(m)
-            files = files or src_files                                              # use src_files if now module/package
+            files = files or src_files                                              # use src_files if new module/package
         for filename in files:
             print('   %s' % filename, end=' . . . ')
             if internal and not self:
@@ -385,16 +385,21 @@ def init(app, _modules=None):
                 print('grabbing version at', base_dir/filename, end=' . . . ')
                 with open(base_dir/filename, 'rb') as fh:
                     data = fh.read()
-            with open(app/filename, 'wb') as fh:
+            if mtype is MODULE:
+                dest = app/filename
+            else:
+                dest = app/m/filename
+            with open(dest, 'wb') as fh:
                 fh.write(data)
             print('   copied')
     print('done')
 
 @Command(
         app=Spec('pyzapp path/app to update', type=Path),
+        external=Spec('include external modules', FLAG),
         modules=Spec('which modules to update', MULTI),
         )
-def update(app, *modules):
+def update(app, external, *modules):
     """
     update supported dependencies in app's source folder
     """
@@ -404,6 +409,8 @@ def update(app, *modules):
         # get installed modules
         for _, modules, _ in app.walk():
             break
+        if not external:
+            modules = [m for m in modules if m in internal_modules]
     init(app, modules)
 
 @Command(
