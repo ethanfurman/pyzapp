@@ -263,6 +263,7 @@ def convert(source, output, include, shebang, compress, force):
             new_main.append('    from %s import __main__' % module_name)
         elif source_dir.exists('cli.py'):
             new_main.append('    import cli')
+            new_main.append('    cli.Run()')
         new_main.append('finally:\n    archive.close()')
         with open(source_dir/'__main__.py', 'w') as m:
             m.write('\n'.join(new_main) + '\n')
@@ -283,7 +284,7 @@ def convert(source, output, include, shebang, compress, force):
                 for f in filenames:
                     print('   ', f, verbose=3)
                     if (
-                            f.endswith(('.swp','.pyc','.bak','.old'))
+                            f.endswith(('.swp','.pyc','.pyo','.bak','.old'))
                             or f.startswith(('.git','.hg'))
                         ):
                         continue
@@ -318,7 +319,7 @@ def convert(source, output, include, shebang, compress, force):
                     print(' ', dirpath, verbose=3)
                     for f in filenames:
                         print('   ', f, verbose=3)
-                        if f.endswith(('.swp','.pyc','.bak','.old')):
+                        if f.endswith(('.swp','.pyc','.pyo','.bak','.old')):
                             continue
                         f = dirpath/f
                         arcname = f - module_path
@@ -352,13 +353,15 @@ def init(app, _modules=None):
                     files.append(m+'.py')
                 elif app.exists(m):
                     # package already exists in source, so collect names to update
-                    files = [
-                            f
-                            for f in app.listdir(m)
-                            if not f.endswith(('.swp','.pyc','.bak','.old'))
-                            ]
-                # elif app.exists('%s.py' % m):
-                #     m += '.py'
+                    files = []
+                    for dirpath, dirnames, filenames in (app/m).walk():
+
+                        files.extend([
+                                dirpath/f-app/m
+                                for f in filenames
+                                if not f.endswith(('.swp','.pyc','.pyo','.bak','.old'))
+                                ])
+
                 external_modules[m] = files
     echo(external_modules)
     for m, files in internal_modules.items() + external_modules.items():
@@ -377,6 +380,8 @@ def init(app, _modules=None):
             # non-standard module/package, look for original files
             mtype, base_dir, src_files = find_module_files(m)
             files = files or src_files                                              # use src_files if new module/package
+            print('   %s at %s' % (mtype, base_dir), verbose=2)
+        print('  all files:\n    %s' % '\n    '.join(files), verbose=3)
         for filename in files:
             print('   %s' % filename, end=' . . . ')
             if internal and not self:
@@ -384,18 +389,16 @@ def init(app, _modules=None):
                 with open('PYZAPP'/m/filename, 'rb') as fh:
                     data = fh.read()
             else:
-                # mtype, source = find_module_file(m)
-                if mtype is MODULE:
-                    src = base_dir/filename
-                else:
-                    src = base_dir/m/filename
-                print('grabbing version at', src, end=' . . . ')
+                src = base_dir/filename
+                print('\n   grabbing version at', src, end=' . . . ')
                 with open(src, 'rb') as fh:
                     data = fh.read()
             if mtype is MODULE:
                 dest = app/filename
             else:
                 dest = app/m/filename
+            if not dest.dirname.exists():
+                dest.dirname.mkdir()
             with open(dest, 'wb') as fh:
                 fh.write(data)
             print('   copied')
@@ -455,11 +458,13 @@ def find_module_files(name):
     module_type, path = find_module_file(name)
     if module_type is MODULE:
         base_dir = path.dirname
+        print('find_module_files: %s  %s  %s' % (module_type, path.dirname, [path.filename]), verbose=3)
         return module_type, path.dirname, [path.filename]
     else:
         package_file = path.stem
         package_dir = path
-        base_dir = path.dirname
+        base_dir = path #.dirname
+        print('11 ', base_dir, verbose=3)
         for dirpath, dirnames, filenames in package_dir.walk():
             if '.git' in dirnames:
                 dirnames.remove('.git')
@@ -468,9 +473,10 @@ def find_module_files(name):
             print('12 ', dirpath, verbose=3)
             for f in filenames:
                 print('13   ', f, verbose=3)
-                if f.endswith(('.swp','.pyc','.bak','.old')) or f[0:1] in '~.':
+                if f.endswith(('.swp','.pyc','.pyo','.bak','.old')) or f[0:1] in '~.':
                     continue
                 files.append(dirpath/f-base_dir)
+        print('find_module_files: %s  %s  [%s]' % (module_type, base_dir, ', '.join(files)), verbose=3)
         return module_type, base_dir, files
 
 ## do it
