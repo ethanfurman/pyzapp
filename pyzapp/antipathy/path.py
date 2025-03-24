@@ -696,7 +696,7 @@ class Methods(object):
         o = other._value_
         if not s.startswith(o):
             raise ValueError("cannot subtract %r from %r" % (other, self))
-        return Path(s[len(o):])
+        return Path(s[len(o):]).lstrip(self._SLASH)
 
     def access(self, file_name, mode=None):
         if mode is None:
